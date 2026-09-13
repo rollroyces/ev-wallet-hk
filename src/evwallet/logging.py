@@ -16,14 +16,13 @@ from __future__ import annotations
 
 import logging
 import sys
+from datetime import UTC
 from typing import Any
 
 # Module-level state — guarded by ``_CONFIGURED`` so multiple ``configure()``
 # calls are no-ops after the first.
 _CONFIGURED = False
-_DEFAULT_FORMAT = (
-    "%(asctime)s %(levelname)-8s %(name)s [%(trace_id)s] %(message)s"
-)
+_DEFAULT_FORMAT = "%(asctime)s %(levelname)-8s %(name)s [%(trace_id)s] %(message)s"
 
 
 class _TraceIdFilter(logging.Filter):
@@ -49,19 +48,37 @@ class _SafeJsonFormatter(logging.Formatter):
     """
 
     _RESERVED = {
-        "name", "msg", "args", "levelname", "levelno", "pathname",
-        "filename", "module", "exc_info", "exc_text", "stack_info",
-        "lineno", "funcName", "created", "msecs", "relativeCreated",
-        "thread", "threadName", "processName", "process", "message",
-        "asctime", "trace_id",
+        "name",
+        "msg",
+        "args",
+        "levelname",
+        "levelno",
+        "pathname",
+        "filename",
+        "module",
+        "exc_info",
+        "exc_text",
+        "stack_info",
+        "lineno",
+        "funcName",
+        "created",
+        "msecs",
+        "relativeCreated",
+        "thread",
+        "threadName",
+        "processName",
+        "process",
+        "message",
+        "asctime",
+        "trace_id",
     }
 
     def format(self, record: logging.LogRecord) -> str:
         import json
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         payload: dict[str, Any] = {
-            "ts": datetime.fromtimestamp(record.created, tz=timezone.utc)
+            "ts": datetime.fromtimestamp(record.created, tz=UTC)
             .isoformat(timespec="milliseconds")
             .replace("+00:00", "Z"),
             "level": record.levelname,
@@ -111,7 +128,7 @@ def configure(
     resolved_level = level
     resolved_fmt = fmt
     try:
-        from evwallet.config import get_settings  # noqa: PLC0415
+        from evwallet.config import get_settings
     except Exception:
         get_settings = None  # type: ignore[assignment]
     else:
@@ -134,7 +151,7 @@ def configure(
 
     if str(resolved_fmt).lower() == "json":
         try:
-            from pythonjsonlogger.json import JsonFormatter  # noqa: PLC0415
+            from pythonjsonlogger.json import JsonFormatter
         except ImportError:
             handler.setFormatter(_SafeJsonFormatter())
         else:
@@ -155,7 +172,8 @@ def configure(
     # Replace handlers so re-import doesn't accumulate duplicates.
     root.handlers = [handler]
     root.setLevel(
-        resolved_level if isinstance(resolved_level, int)
+        resolved_level
+        if isinstance(resolved_level, int)
         else getattr(logging, str(resolved_level).upper(), logging.INFO)
     )
     # Silence noisy libraries unless we're explicitly in DEBUG.

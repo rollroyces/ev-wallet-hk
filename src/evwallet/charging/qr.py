@@ -38,7 +38,7 @@ def _secret() -> bytes:
     back to ``Settings.jwt_secret`` for dev — see docs/ARCHITECTURE.md.
     """
     settings = get_settings()
-    secret = getattr(settings, "qr_hmac_secret", None) or settings.jwt_secret
+    secret = settings.qr_hmac_secret or settings.jwt_secret
     return secret.encode("utf-8")
 
 
@@ -70,7 +70,9 @@ def parse_qr(payload: str) -> tuple[str, str]:
     if not isinstance(payload, str) or not payload.startswith(_PREFIX):
         raise ChargingInvalidQR(
             "QR payload must start with 'evwallet://'",
-            details={"prefix_seen": payload[:32] if isinstance(payload, str) else type(payload).__name__},
+            details={
+                "prefix_seen": payload[:32] if isinstance(payload, str) else type(payload).__name__
+            },
         )
     try:
         parts = urlsplit(payload)

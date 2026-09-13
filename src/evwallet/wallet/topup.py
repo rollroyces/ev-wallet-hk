@@ -21,6 +21,8 @@ from evwallet.logging import get_logger
 from evwallet.payments import apple_google, stripe
 from evwallet.wallet.ledger import BUCKET_AVAILABLE, BUCKET_EXTERNAL, post_transaction
 
+from .reservation import _jsonable_metadata
+
 _log = get_logger(__name__)
 
 ZERO = Decimal("0")
@@ -36,13 +38,9 @@ def _validate_topup_amount(amount: Decimal) -> Decimal:
     """
     settings = get_settings()
     if not isinstance(amount, Decimal):
-        raise ValidationError(
-            f"topup amount must be Decimal, got {type(amount).__name__}"
-        )
+        raise ValidationError(f"topup amount must be Decimal, got {type(amount).__name__}")
     if amount <= ZERO:
-        raise ValidationError(
-            "topup amount must be > 0", details={"amount": str(amount)}
-        )
+        raise ValidationError("topup amount must be > 0", details={"amount": str(amount)})
     soft_cap = (settings.preauth_max_hkd * Decimal("10")).quantize(Decimal("0.0001"))
     if amount > soft_cap:
         raise ValidationError(
@@ -93,7 +91,9 @@ async def topup_stripe(
         wallet_id,
         amount,
         external_ref=f"stripe:{stripe_payment_intent_id}",
-        metadata={"source": "stripe", "stripe_payment_intent_id": stripe_payment_intent_id},
+        metadata=_jsonable_metadata(
+            {"source": "stripe", "stripe_payment_intent_id": stripe_payment_intent_id}
+        ),
     )
 
 
@@ -137,7 +137,7 @@ async def topup_apple_pay(
         wallet_id,
         amount,
         external_ref=f"apple_pay:{token_id}",
-        metadata={"source": "apple_pay", "transaction_id": token_id},
+        metadata=_jsonable_metadata({"source": "apple_pay", "transaction_id": token_id}),
     )
 
 
@@ -169,15 +169,13 @@ async def topup_google_pay(
 
     token = google_payload.get("id") or google_payload.get("token") or ""
     if not token:
-        raise PaymentError(
-            "google_payload.id/token missing", details={"source": "google_pay"}
-        )
+        raise PaymentError("google_payload.id/token missing", details={"source": "google_pay"})
     return await _post_topup(
         db,
         wallet_id,
         amount,
         external_ref=f"google_pay:{token}",
-        metadata={"source": "google_pay", "token": token},
+        metadata=_jsonable_metadata({"source": "google_pay", "token": token}),
     )
 
 

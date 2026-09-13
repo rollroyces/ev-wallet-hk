@@ -26,9 +26,7 @@ from evwallet.errors import ApplePayValidationError, GooglePayValidationError
 ZERO = Decimal("0")
 
 
-def validate_apple_pay_payload(
-    payload: dict[str, Any], *, expected_amount: Decimal
-) -> None:
+def validate_apple_pay_payload(payload: dict[str, Any], *, expected_amount: Decimal) -> None:
     """Validate the SHAPE of an Apple Pay PKPayment payload.
 
     Args:
@@ -43,21 +41,15 @@ def validate_apple_pay_payload(
 
     txn_id = payload.get("transactionIdentifier")
     if not isinstance(txn_id, str) or not txn_id:
-        raise ApplePayValidationError(
-            "apple payload missing transactionIdentifier"
-        )
+        raise ApplePayValidationError("apple payload missing transactionIdentifier")
 
     payment_data = payload.get("paymentData")
     if not isinstance(payment_data, dict):
-        raise ApplePayValidationError(
-            "apple payload missing paymentData object"
-        )
+        raise ApplePayValidationError("apple payload missing paymentData object")
 
     # The encrypted blob — must exist; we do NOT decrypt in this stub.
     if "data" not in payment_data:
-        raise ApplePayValidationError(
-            "apple payload.paymentData.data missing"
-        )
+        raise ApplePayValidationError("apple payload.paymentData.data missing")
 
     # Amount check: client may pass the amount they intend to pay; if so,
     # it must match.
@@ -66,9 +58,7 @@ def validate_apple_pay_payload(
         try:
             amt = Decimal(str(declared_amount)).quantize(Decimal("0.0001"))
         except Exception as e:
-            raise ApplePayValidationError(
-                "apple payload.amount is not a valid decimal"
-            ) from e
+            raise ApplePayValidationError("apple payload.amount is not a valid decimal") from e
         if amt != expected_amount:
             raise ApplePayValidationError(
                 "apple payload amount does not match expected",
@@ -76,9 +66,7 @@ def validate_apple_pay_payload(
             )
 
 
-def validate_google_pay_payload(
-    payload: dict[str, Any], *, expected_amount: Decimal
-) -> None:
+def validate_google_pay_payload(payload: dict[str, Any], *, expected_amount: Decimal) -> None:
     """Validate the SHAPE of a Google Pay token payload.
 
     Args:
@@ -96,18 +84,14 @@ def validate_google_pay_payload(
     # We accept either ``id`` or ``token`` at the top level for flexibility.
     token = payload.get("id") or payload.get("token")
     if not isinstance(token, str) or not token:
-        raise GooglePayValidationError(
-            "google payload missing 'id' or 'token' string"
-        )
+        raise GooglePayValidationError("google payload missing 'id' or 'token' string")
 
     declared_amount = payload.get("amount")
     if declared_amount is not None:
         try:
             amt = Decimal(str(declared_amount)).quantize(Decimal("0.0001"))
         except Exception as e:
-            raise GooglePayValidationError(
-                "google payload.amount is not a valid decimal"
-            ) from e
+            raise GooglePayValidationError("google payload.amount is not a valid decimal") from e
         if amt != expected_amount:
             raise GooglePayValidationError(
                 "google payload amount does not match expected",

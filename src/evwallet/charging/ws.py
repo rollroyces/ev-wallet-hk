@@ -101,9 +101,7 @@ async def _authenticate_ws(
 async def _load_session(session_id: uuid.UUID, user_id: uuid.UUID) -> ChargingSession:
     factory = get_sessionmaker()
     async with factory() as db:
-        result = await db.execute(
-            select(ChargingSession).where(ChargingSession.id == session_id)
-        )
+        result = await db.execute(select(ChargingSession).where(ChargingSession.id == session_id))
         session = result.scalar_one_or_none()
         if session is None:
             raise ChargingSessionNotFound(
@@ -123,20 +121,14 @@ async def _get_user_wallet(user_id: uuid.UUID) -> Wallet:
         result = await db.execute(select(Wallet).where(Wallet.user_id == user_id))
         wallet = result.scalar_one_or_none()
         if wallet is None:
-            raise ChargingSessionNotFound(
-                "User has no wallet", details={"user_id": str(user_id)}
-            )
+            raise ChargingSessionNotFound("User has no wallet", details={"user_id": str(user_id)})
         return wallet
 
 
-async def _update_session(
-    session_id: uuid.UUID, **fields: Any
-) -> ChargingSession | None:
+async def _update_session(session_id: uuid.UUID, **fields: Any) -> ChargingSession | None:
     factory = get_sessionmaker()
     async with factory() as db:
-        result = await db.execute(
-            select(ChargingSession).where(ChargingSession.id == session_id)
-        )
+        result = await db.execute(select(ChargingSession).where(ChargingSession.id == session_id))
         sess = result.scalar_one_or_none()
         if sess is None:
             return None
@@ -203,9 +195,7 @@ async def _synthetic_telemetry_loop(
                 await db.commit()
             await publish_to_redis(redis, session_id=session_id, frame_dict=frame)
         except Exception as exc:
-            _log.warning(
-                "ws.telemetry.publish_failed session=%s err=%s", session_id, exc
-            )
+            _log.warning("ws.telemetry.publish_failed session=%s err=%s", session_id, exc)
         with suppress(Exception):
             await websocket.send_json(frame)
         if soc >= 100:
@@ -242,10 +232,10 @@ async def _redis_listener_loop(
                 continue
             with suppress(Exception):
                 await websocket.send_json(frame)
-            if (
-                frame.get("type") in {"status", "error"}
-                and frame.get("status") in {"completed", "failed"}
-            ):
+            if frame.get("type") in {"status", "error"} and frame.get("status") in {
+                "completed",
+                "failed",
+            }:
                 break
     finally:
         with suppress(Exception):
@@ -267,9 +257,7 @@ async def _settle_session(session_id: uuid.UUID, user_id: uuid.UUID) -> dict[str
     """
     factory = get_sessionmaker()
     async with factory() as db:
-        result = await db.execute(
-            select(ChargingSession).where(ChargingSession.id == session_id)
-        )
+        result = await db.execute(select(ChargingSession).where(ChargingSession.id == session_id))
         session = result.scalar_one_or_none()
         if session is None:
             raise ChargingSessionNotFound(
@@ -290,7 +278,9 @@ async def _settle_session(session_id: uuid.UUID, user_id: uuid.UUID) -> dict[str
             )
         ).scalar_one_or_none()
         final_kwh = (
-            Decimal(latest.kwh_cumulative) if latest is not None else Decimal(session.kwh_delivered or 0)
+            Decimal(latest.kwh_cumulative)
+            if latest is not None
+            else Decimal(session.kwh_delivered or 0)
         )
         rate = (
             Decimal(latest.cost_hkd_cumulative) / final_kwh
@@ -315,9 +305,7 @@ async def _settle_session(session_id: uuid.UUID, user_id: uuid.UUID) -> dict[str
             await db.execute(select(Wallet).where(Wallet.user_id == user_id))
         ).scalar_one_or_none()
         if wallet_row is None:
-            raise ChargingSessionNotFound(
-                "User has no wallet", details={"user_id": str(user_id)}
-            )
+            raise ChargingSessionNotFound("User has no wallet", details={"user_id": str(user_id)})
         result_settle, _release_txn = await end_session_settle(
             db,
             wallet_id=wallet_row.id,

@@ -34,9 +34,7 @@ def _track_reservation_calls(monkeypatch):
 
     def _make_wrapper(name, original):  # type: ignore[no-untyped-def]
         async def _wrapped(*args, **kwargs):
-            cleaned_kwargs = {
-                k: (str(v) if hasattr(v, "hex") else v) for k, v in kwargs.items()
-            }
+            cleaned_kwargs = {k: (str(v) if hasattr(v, "hex") else v) for k, v in kwargs.items()}
             cleaned_kwargs["op"] = name
             calls.append(cleaned_kwargs)
             return await original(*args, **kwargs)
@@ -65,9 +63,7 @@ def _track_reservation_calls(monkeypatch):
                 original = getattr(mod, name)
                 if getattr(original, "__patched__", False):
                     continue
-                monkeypatch.setattr(
-                    mod, name, _make_wrapper(name, original), raising=True
-                )
+                monkeypatch.setattr(mod, name, _make_wrapper(name, original), raising=True)
 
     yield calls
 
@@ -149,9 +145,7 @@ async def test_start_session_calls_reserve(
     assert body["ws_url"].startswith("/api/v1/charging/sessions/")
     assert Decimal(body["preauth_hkd"]) == Decimal("120.00")
 
-    assert any(c["op"] == "reserve" for c in _track_reservation_calls), (
-        _track_reservation_calls
-    )
+    assert any(c["op"] == "reserve" for c in _track_reservation_calls), _track_reservation_calls
 
 
 @pytest.mark.asyncio
@@ -236,9 +230,9 @@ async def test_end_session_settles_and_releases(
     assert "kwh_delivered" in body
     assert "duration_seconds" in body
 
-    assert any(
-        c["op"] == "end_session_settle" for c in _track_reservation_calls
-    ), _track_reservation_calls
+    assert any(c["op"] == "end_session_settle" for c in _track_reservation_calls), (
+        _track_reservation_calls
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -317,9 +311,7 @@ async def test_ws_receives_telemetry_frames(
             pass
 
     stop = asyncio.Event()
-    task = asyncio.create_task(
-        _synthetic_telemetry_loop(_WS(), fake_redis, pole_id, stop)
-    )
+    task = asyncio.create_task(_synthetic_telemetry_loop(_WS(), fake_redis, pole_id, stop))
     try:
         # Wait up to ~4.5s for at least one frame.
         for _ in range(45):

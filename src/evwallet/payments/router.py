@@ -47,9 +47,7 @@ async def stripe_webhook(
        ``stripe:<payment_intent_id>``.
     """
     raw = await request.body()
-    event = stripe_verify.verify_webhook_signature(
-        payload=raw, signature_header=stripe_signature
-    )
+    event = stripe_verify.verify_webhook_signature(payload=raw, signature_header=stripe_signature)
 
     # Only handle the success event; ignore the rest.
     etype = event.get("type")
@@ -67,9 +65,7 @@ async def stripe_webhook(
     meta = obj.get("metadata") or {}
     wallet_id_str = meta.get("wallet_id")
     if not wallet_id_str:
-        raise StripeIntentError(
-            "webhook payment_intent.metadata.wallet_id missing"
-        )
+        raise StripeIntentError("webhook payment_intent.metadata.wallet_id missing")
     try:
         wallet_id = uuid.UUID(wallet_id_str)
     except ValueError as e:
@@ -78,17 +74,13 @@ async def stripe_webhook(
     # Verify the wallet exists (defensive — Stripe could send stale events).
     wallet = await db.scalar(select(Wallet).where(Wallet.id == wallet_id))
     if wallet is None:
-        raise StripeIntentError(
-            "webhook wallet not found", details={"wallet_id": str(wallet_id)}
-        )
+        raise StripeIntentError("webhook wallet not found", details={"wallet_id": str(wallet_id)})
 
     # Compute the amount from the PaymentIntent (Stripe amounts are cents).
     amount_minor = Decimal(str(obj.get("amount", "0")))
     amount_hkd = (amount_minor / Decimal("100")).quantize(Decimal("0.0001"))
 
-    txn = await wallet_topup.topup_stripe(
-        db, wallet_id, amount_hkd, payment_intent_id
-    )
+    txn = await wallet_topup.topup_stripe(db, wallet_id, amount_hkd, payment_intent_id)
     await db.commit()
 
     _log.info(
@@ -99,9 +91,7 @@ async def stripe_webhook(
             "payment_intent_id": payment_intent_id,
         },
     )
-    return WebhookAck(
-        received=True, transaction_id=txn.id, wallet_id=wallet_id
-    )
+    return WebhookAck(received=True, transaction_id=txn.id, wallet_id=wallet_id)
 
 
 __all__ = ["router"]

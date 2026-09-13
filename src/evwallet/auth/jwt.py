@@ -54,9 +54,7 @@ def encode_jwt(
     now = int(time.time())
     hours = expiry_hours if expiry_hours is not None else settings.jwt_expiry_hours
     if hours < 1:
-        raise ConfigurationError(
-            f"jwt_expiry_hours must be >= 1, got {hours}"
-        )
+        raise ConfigurationError(f"jwt_expiry_hours must be >= 1, got {hours}")
     exp = now + hours * 3600
 
     payload: dict[str, Any] = {

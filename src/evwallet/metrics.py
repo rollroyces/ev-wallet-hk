@@ -25,7 +25,18 @@ F = TypeVar("F", bound=Callable[..., Any])
 # Default histogram bucket boundaries (seconds). Tuned for the workloads
 # described in ARCHITECTURE.md: HTTP request latency, ledger post, WS frame.
 _DEFAULT_BUCKETS: tuple[float, ...] = (
-    0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+    0.001,
+    0.005,
+    0.01,
+    0.025,
+    0.05,
+    0.1,
+    0.25,
+    0.5,
+    1.0,
+    2.5,
+    5.0,
+    10.0,
 )
 
 
@@ -186,14 +197,8 @@ class Metrics:
                 label_str = self._render_labels(labels_key)
                 lines.append(self._help_line(name, "histogram"))
                 lines.append(self._type_line(name, "histogram"))
-                lines.append(
-                    self._sample_line(
-                        name + "_count", label_str, float(len(samples))
-                    )
-                )
-                lines.append(
-                    self._sample_line(name + "_sum", label_str, float(sum(samples)))
-                )
+                lines.append(self._sample_line(name + "_count", label_str, float(len(samples))))
+                lines.append(self._sample_line(name + "_sum", label_str, float(sum(samples))))
         return "\n".join(lines) + "\n"
 
     # ---- Internals --------------------------------------------------------
@@ -223,7 +228,8 @@ class Metrics:
     def _sample_line(name: str, label_str: str, value: float) -> str:
         # Integer-valued counters render without a decimal point per spec.
         rendered = (
-            str(int(value)) if (name.endswith("_total") and value.is_integer())
+            str(int(value))
+            if (name.endswith("_total") and value.is_integer())
             else repr(float(value))
         )
         return f"{name}{label_str} {rendered}"

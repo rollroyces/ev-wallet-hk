@@ -33,12 +33,30 @@ from evwallet.wallet.ledger import (
 
 _log = get_logger(__name__)
 
+
+def _jsonable_metadata(d: dict[str, Any]) -> dict[str, Any]:
+    """Coerce a metadata dict to be JSON-serializable for the JSONB column.
+
+    UUID and Decimal values become strings; lists/dicts recurse. Used by
+    reserve/settle/release so the ``metadata`` JSONB column never sees a
+    Python type it can't round-trip to JSON.
+    """
+    out: dict[str, Any] = {}
+    for k, v in d.items():
+        if isinstance(v, uuid.UUID) or isinstance(v, Decimal):
+            out[k] = str(v)
+        elif isinstance(v, dict):
+            out[k] = _jsonable_metadata(v)
+        elif isinstance(v, (list, tuple)):
+            out[k] = [str(x) if isinstance(x, (uuid.UUID, Decimal)) else x for x in v]
+        else:
+            out[k] = v
+    return out
+
 ZERO = Decimal("0")
 
 
-def _idempotency_key_for_reserve(
-    wallet_id: uuid.UUID, session_id: str | None
-) -> str | None:
+def _idempotency_key_for_reserve(wallet_id: uuid.UUID, session_id: str | None) -> str | None:
     """Compute deterministic idempotency key for a (wallet, session) pair.
 
     Returns None when session_id is None — callers that pre-auth without a
@@ -54,13 +72,9 @@ def _validate_amount(amount: Decimal, *, op: str) -> Decimal:
     """Reject negative / zero / over-cap amounts at the API boundary."""
     settings = get_settings()
     if not isinstance(amount, Decimal):
-        raise ValidationError(
-            f"{op} amount must be Decimal, got {type(amount).__name__}"
-        )
+        raise ValidationError(f"{op} amount must be Decimal, got {type(amount).__name__}")
     if amount <= ZERO:
-        raise ValidationError(
-            f"{op} amount must be > 0", details={"amount": str(amount)}
-        )
+        raise ValidationError(f"{op} amount must be > 0", details={"amount": str(amount)})
     if amount > settings.preauth_max_hkd:
         raise ValidationError(
             f"{op} amount exceeds preauth_max_hkd",
@@ -112,21 +126,13 @@ async def reserve(
             ("external_clearing", BUCKET_EXTERNAL, ZERO),
         ],
         external_ref=external_ref,
-        metadata={
-            "operation": "reserve",
-            "session_id": session_id,
-            "amount_hkd": str(amount),
-        },
+        metadata=_jsonable_metadata(
+            {"operation": "reserve", "session_id": session_id, "amount_hkd": str(amount)}
+        ),
     )
 
     entries = list(
-        (
-            await db.execute(
-                select(LedgerEntry).where(LedgerEntry.txn_id == txn.id)
-            )
-        )
-        .scalars()
-        .all()
+        (await db.execute(select(LedgerEntry).where(LedgerEntry.txn_id == txn.id))).scalars().all()
     )
     _log.info(
         "reservation.reserve",
@@ -182,11 +188,9 @@ async def settle(
             ("charge_credit", BUCKET_EXTERNAL, +amount),
         ],
         external_ref=None,
-        metadata={
-            "operation": "settle",
-            "session_id": session_id,
-            "amount_hkd": str(amount),
-        },
+        metadata=_jsonable_metadata(
+            {"operation": "settle", "session_id": session_id, "amount_hkd": str(amount)}
+        ),
     )
 
 
@@ -229,11 +233,9 @@ async def release(
             ("release", BUCKET_AVAILABLE, +amount),
         ],
         external_ref=None,
-        metadata={
-            "operation": "release",
-            "session_id": session_id,
-            "amount_hkd": str(amount),
-        },
+        metadata=_jsonable_metadata(
+            {"operation": "release", "session_id": session_id, "amount_hkd": str(amount)}
+        ),
     )
 
 
@@ -278,9 +280,7 @@ async def end_session_settle(
         ValidationError: If final_kwh < 0 or rate <= 0 or any cap violation.
     """
     if final_kwh < ZERO:
-        raise ValidationError(
-            "final_kwh must be >= 0", details={"final_kwh": str(final_kwh)}
-        )
+        raise ValidationError("final_kwh must be >= 0", details={"final_kwh": str(final_kwh)})
     if rate_hkd_per_kwh <= ZERO:
         raise ValidationError(
             "rate_hkd_per_kwh must be > 0",
@@ -288,9 +288,7 @@ async def end_session_settle(
         )
 
     # Compute with full Decimal precision — no float anywhere on this path.
-    computed_final: Decimal = (final_kwh * rate_hkd_per_kwh).quantize(
-        Decimal("0.0001")
-    )
+    computed_final: Decimal = (final_kwh * rate_hkd_per_kwh).quantize(Decimal("0.0001"))
     _validate_amount(computed_final, op="end_session_settle")
 
     reserved = await _current_reserved(db, wallet_id)
@@ -312,9 +310,7 @@ async def end_session_settle(
     # Optional second leg: release the remainder.
     remainder = (reserved - computed_final).quantize(Decimal("0.0001"))
     if remainder > ZERO:
-        release_txn = await release(
-            db, wallet_id, remainder, session_id=session_id
-        )
+        release_txn = await release(db, wallet_id, remainder, session_id=session_id)
     else:
         release_txn = None
 

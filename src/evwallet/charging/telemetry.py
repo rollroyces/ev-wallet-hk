@@ -121,9 +121,7 @@ def frame_to_wire(
         "kw_instant": str(Decimal(frame.get("kw_instant", "0"))),
         "soc_pct": frame.get("soc_pct"),
         "cost_hkd_cumulative": str(cost),
-        "running_total_hkd": str(
-            running_total_hkd if running_total_hkd is not None else cost
-        ),
+        "running_total_hkd": str(running_total_hkd if running_total_hkd is not None else cost),
     }
 
 

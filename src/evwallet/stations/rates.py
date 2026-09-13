@@ -76,9 +76,7 @@ async def get_pole_rates_window(
             await db.execute(select(PoleModel.id).where(PoleModel.id == pole_id))
         ).first()
         if pole_exists is None:
-            raise PoleNotFound(
-                "Pole not found", details={"pole_id": str(pole_id)}
-            )
+            raise PoleNotFound("Pole not found", details={"pole_id": str(pole_id)})
 
     by_hour: dict[int, HourlyRate] = {}
     for r in rows:
@@ -151,9 +149,7 @@ async def get_current_rate(
         or_(HourlyRate.valid_to.is_(None), HourlyRate.valid_to > ts_local),
     )
     rows = (await db.execute(stmt)).scalars().all()
-    candidates = [
-        r for r in rows if r.hour_start_local.hour == hour
-    ]
+    candidates = [r for r in rows if r.hour_start_local.hour == hour]
     if not candidates:
         return None
     rate = max(candidates, key=lambda r: r.valid_from)

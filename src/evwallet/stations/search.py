@@ -43,9 +43,7 @@ def haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     return _EARTH_R_KM * c
 
 
-def _bbox(
-    lat: float, lng: float, radius_km: float
-) -> tuple[float, float, float, float]:
+def _bbox(lat: float, lng: float, radius_km: float) -> tuple[float, float, float, float]:
     """Return ``(lat_min, lat_max, lng_min, lng_max)`` covering ``radius_km``.
 
     ``lat``-degree distance is constant in km; ``lng``-degree distance is

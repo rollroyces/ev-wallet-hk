@@ -97,9 +97,7 @@ WalletSummary.model_rebuild()
 async def _load_wallet_for_user(db: AsyncSession, user: User) -> Wallet:
     wallet = await db.scalar(select(Wallet).where(Wallet.user_id == user.id))
     if wallet is None:
-        raise WalletNotFoundError(
-            "no wallet for user", details={"user_id": str(user.id)}
-        )
+        raise WalletNotFoundError("no wallet for user", details={"user_id": str(user.id)})
     return wallet
 
 
@@ -165,12 +163,8 @@ async def topup(
     if body.source == "stripe":
         payment_intent_id = body.source_payload.get("payment_intent_id")
         if not payment_intent_id:
-            raise ValidationError(
-                "stripe topup requires source_payload.payment_intent_id"
-            )
-        txn = await wallet_topup.topup_stripe(
-            db, wallet.id, body.amount_hkd, payment_intent_id
-        )
+            raise ValidationError("stripe topup requires source_payload.payment_intent_id")
+        txn = await wallet_topup.topup_stripe(db, wallet.id, body.amount_hkd, payment_intent_id)
     elif body.source == "apple_pay":
         txn = await wallet_topup.topup_apple_pay(
             db, wallet.id, body.amount_hkd, body.source_payload
@@ -183,9 +177,7 @@ async def topup(
         raise ValidationError(f"unsupported source: {body.source}")
 
     await db.commit()
-    return TopupResult(
-        transaction_id=txn.id, status=txn.status, amount_hkd=txn.amount
-    )
+    return TopupResult(transaction_id=txn.id, status=txn.status, amount_hkd=txn.amount)
 
 
 @router.get("/transactions", response_model=TransactionsPage)
@@ -211,9 +203,7 @@ async def list_transactions(
             raise ValidationError("invalid cursor") from e
         stmt = stmt.where(WalletTransaction.id < cursor_ts)
 
-    rows: Sequence[WalletTransaction] = (
-        (await db.execute(stmt)).scalars().all()
-    )
+    rows: Sequence[WalletTransaction] = (await db.execute(stmt)).scalars().all()
     has_more = len(rows) > limit
     page_rows = list(rows[:limit])
     next_cursor = str(page_rows[-1].id) if has_more and page_rows else None
@@ -230,9 +220,12 @@ async def get_balance(
 ) -> BalanceOut:
     """Return the current user's wallet balance only (no transactions)."""
     wallet = await _load_wallet_for_user(db, user)
-    return BalanceOut(
-        available_hkd=wallet.available_credits, reserved_hkd=wallet.reserved_credits
-    )
+    return BalanceOut(available_hkd=wallet.available_credits, reserved_hkd=wallet.reserved_credits)
 
 
-__all__ = ["router"]
+def build_router() -> APIRouter:
+    """Return the wallet router (factory pattern matching charging/stations routers)."""
+    return router
+
+
+__all__ = ["build_router", "router"]

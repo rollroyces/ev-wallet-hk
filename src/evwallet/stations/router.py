@@ -185,18 +185,14 @@ def build_router() -> APIRouter:
     ) -> StationDetailResponse:
         """Return full station detail (poles + next 24h rates)."""
         station = (
-            await db.execute(
-                select(ChargingStation).where(ChargingStation.id == station_id)
-            )
+            await db.execute(select(ChargingStation).where(ChargingStation.id == station_id))
         ).scalar_one_or_none()
         if station is None:
-            raise StationNotFound(
-                "Station not found", details={"station_id": str(station_id)}
-            )
+            raise StationNotFound("Station not found", details={"station_id": str(station_id)})
 
         poles = (
-            await db.execute(select(Pole).where(Pole.station_id == station_id))
-        ).scalars().all()
+            (await db.execute(select(Pole).where(Pole.station_id == station_id))).scalars().all()
+        )
         pole_summaries = [_pole_to_summary(p) for p in poles]
 
         # Next-24h rates: aggregate the first pole's rates for the demo.
@@ -205,9 +201,7 @@ def build_router() -> APIRouter:
         if poles:
             local_today = datetime.now(tz=HK_TZ).date()
             try:
-                rows = await get_pole_rates_window(
-                    db, pole_id=poles[0].id, date_local=local_today
-                )
+                rows = await get_pole_rates_window(db, pole_id=poles[0].id, date_local=local_today)
                 next_24h = [_rate_to_out(r) for r in rows]
             except Exception as exc:
                 _log.warning(
@@ -248,22 +242,15 @@ def build_router() -> APIRouter:
     ) -> StationRatesResponse:
         """Return the 24-hour TOU window for a station's first pole."""
         station = (
-            await db.execute(
-                select(ChargingStation).where(ChargingStation.id == station_id)
-            )
+            await db.execute(select(ChargingStation).where(ChargingStation.id == station_id))
         ).scalar_one_or_none()
         if station is None:
-            raise StationNotFound(
-                "Station not found", details={"station_id": str(station_id)}
-            )
+            raise StationNotFound("Station not found", details={"station_id": str(station_id)})
 
         if pole_id is None:
             first_pole = (
                 await db.execute(
-                    select(Pole)
-                    .where(Pole.station_id == station_id)
-                    .order_by(Pole.id)
-                    .limit(1)
+                    select(Pole).where(Pole.station_id == station_id).order_by(Pole.id).limit(1)
                 )
             ).scalar_one_or_none()
             if first_pole is None:
@@ -274,9 +261,7 @@ def build_router() -> APIRouter:
             pole_id = first_pole.id
 
         local_date = date_param or datetime.now(tz=HK_TZ).date()
-        rows = await get_pole_rates_window(
-            db, pole_id=pole_id, date_local=local_date
-        )
+        rows = await get_pole_rates_window(db, pole_id=pole_id, date_local=local_date)
         return StationRatesResponse(
             station_id=station_id,
             pole_id=pole_id,

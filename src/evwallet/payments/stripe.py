@@ -99,9 +99,7 @@ async def verify_payment_intent(
     }
 
 
-def verify_webhook_signature(
-    *, payload: bytes, signature_header: str | None
-) -> dict[str, Any]:
+def verify_webhook_signature(*, payload: bytes, signature_header: str | None) -> dict[str, Any]:
     """Verify a Stripe webhook signature and return the parsed event.
 
     Uses ``stripe.Webhook.construct_event`` when ``EVW_STRIPE_WEBHOOK_SECRET``
@@ -128,9 +126,7 @@ def verify_webhook_signature(
                 payload, signature_header, settings.stripe_webhook_secret
             )
         except Exception as e:  # pragma: no cover
-            raise StripeSignatureError(
-                "stripe webhook signature verification failed"
-            ) from e
+            raise StripeSignatureError("stripe webhook signature verification failed") from e
         # event is a StripeObject; cast to dict for downstream consumers.
         return dict(event)  # type: ignore[arg-type]
     # Stub mode — accept any well-formed JSON.

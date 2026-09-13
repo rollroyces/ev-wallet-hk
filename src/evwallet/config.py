@@ -64,9 +64,7 @@ class Settings(BaseSettings):
     api_port: int = 8000
     workers: int = 3
 
-    jwt_secret: str = Field(
-        default="dev_secret_change_me_min_32_characters_long_xx"
-    )
+    jwt_secret: str = Field(default="dev_secret_change_me_min_32_characters_long_xx")
     jwt_expiry_hours: int = 720
     trusted_proxies: str = ""
 
@@ -81,6 +79,16 @@ class Settings(BaseSettings):
     redis_password: str = "evwallet"
 
     preauth_max_hkd: Decimal = Decimal("500.00")
+
+    # HMAC secret for QR code signatures. In production set this separately
+    # from jwt_secret so a JWT compromise doesn't also let an attacker forge
+    # valid QR codes. Defaults to jwt_secret in dev for convenience.
+    qr_hmac_secret: str | None = None
+
+    # Shared bearer token used by the n8n ingestion workflows (and any
+    # other service-to-service caller). REQUIRED in production; if unset,
+    # /api/v1/internal/* endpoints return 503 except in 'development' env.
+    internal_token: str | None = None
 
     stripe_secret_key: str | None = None
     stripe_webhook_secret: str | None = None
@@ -100,8 +108,7 @@ class Settings(BaseSettings):
         normalized = value.strip().upper()
         if normalized not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
             raise ConfigurationError(
-                f"EVW_LOG_LEVEL must be one of DEBUG/INFO/WARNING/ERROR/CRITICAL, "
-                f"got {value!r}"
+                f"EVW_LOG_LEVEL must be one of DEBUG/INFO/WARNING/ERROR/CRITICAL, got {value!r}"
             )
         return normalized
 
@@ -111,9 +118,7 @@ class Settings(BaseSettings):
         """Reject anything other than ``human`` / ``json``."""
         normalized = value.strip().lower()
         if normalized not in {"human", "json"}:
-            raise ConfigurationError(
-                f"EVW_LOG_FORMAT must be 'human' or 'json', got {value!r}"
-            )
+            raise ConfigurationError(f"EVW_LOG_FORMAT must be 'human' or 'json', got {value!r}")
         return normalized
 
     @field_validator("jwt_secret")
@@ -128,8 +133,7 @@ class Settings(BaseSettings):
         """
         if len(value) < 32:
             raise ConfigurationError(
-                "EVW_JWT_SECRET must be at least 32 bytes long "
-                f"(got len={len(value)})"
+                f"EVW_JWT_SECRET must be at least 32 bytes long (got len={len(value)})"
             )
         lowered = value.lower()
         for placeholder in ("change_me", "changeme", "secret", "test_secret"):
@@ -146,8 +150,7 @@ class Settings(BaseSettings):
         """Refuse to start with empty Postgres credentials."""
         if not value.strip():
             raise ConfigurationError(
-                "EVW_POSTGRES_USER / EVW_POSTGRES_PASSWORD / EVW_POSTGRES_DB "
-                "must all be set"
+                "EVW_POSTGRES_USER / EVW_POSTGRES_PASSWORD / EVW_POSTGRES_DB must all be set"
             )
         return value
 
@@ -157,8 +160,7 @@ class Settings(BaseSettings):
         """Refuse to start with empty Redis password."""
         if not value.strip():
             raise ConfigurationError(
-                "EVW_REDIS_PASSWORD must be set (no default — production must "
-                "authenticate)"
+                "EVW_REDIS_PASSWORD must be set (no default — production must authenticate)"
             )
         return value
 
@@ -167,9 +169,7 @@ class Settings(BaseSettings):
     def _validate_preauth_max(cls, value: Decimal) -> Decimal:
         """Pre-auth cap must be positive and within sane bounds."""
         if value <= 0:
-            raise ConfigurationError(
-                f"EVW_PREAUTH_MAX_HKD must be > 0, got {value}"
-            )
+            raise ConfigurationError(f"EVW_PREAUTH_MAX_HKD must be > 0, got {value}")
         if value > Decimal("10000"):
             raise ConfigurationError(
                 f"EVW_PREAUTH_MAX_HKD seems unreasonably high ({value}); "
@@ -182,9 +182,7 @@ class Settings(BaseSettings):
     def _validate_ports(cls, value: int) -> int:
         """Reject ports outside the kernel-allocated range."""
         if not 1 <= value <= 65535:
-            raise ConfigurationError(
-                f"Port must be in 1..65535, got {value}"
-            )
+            raise ConfigurationError(f"Port must be in 1..65535, got {value}")
         return value
 
     @field_validator("workers")
@@ -194,9 +192,7 @@ class Settings(BaseSettings):
         if value < 1:
             raise ConfigurationError(f"EVW_WORKERS must be >= 1, got {value}")
         if value > 32:
-            raise ConfigurationError(
-                f"EVW_WORKERS={value} looks unreasonable; max 32"
-            )
+            raise ConfigurationError(f"EVW_WORKERS={value} looks unreasonable; max 32")
         return value
 
     @field_validator("jwt_expiry_hours")
@@ -204,13 +200,9 @@ class Settings(BaseSettings):
     def _validate_jwt_expiry(cls, value: int) -> int:
         """JWT lifetime must be 1..8760 hours (1 year upper bound)."""
         if value < 1:
-            raise ConfigurationError(
-                f"EVW_JWT_EXPIRY_HOURS must be >= 1, got {value}"
-            )
+            raise ConfigurationError(f"EVW_JWT_EXPIRY_HOURS must be >= 1, got {value}")
         if value > 8760:
-            raise ConfigurationError(
-                f"EVW_JWT_EXPIRY_HOURS={value} exceeds 1 year — too long"
-            )
+            raise ConfigurationError(f"EVW_JWT_EXPIRY_HOURS={value} exceeds 1 year — too long")
         return value
 
     # ---- Derived helpers ---------------------------------------------------
@@ -294,9 +286,7 @@ def load_settings_from_env(env: dict[str, str] | None = None) -> Settings:
         try:
             return Settings()
         except Exception as exc:
-            raise ConfigurationError(
-                f"Configuration load failed: {exc}"
-            ) from exc
+            raise ConfigurationError(f"Configuration load failed: {exc}") from exc
     finally:
         for key in injected:
             if saved[key] == "":
@@ -319,7 +309,7 @@ def settings_as_dict(settings: Settings) -> dict[str, Any]:
         "stripe_secret_key",
         "stripe_webhook_secret",
     ):
-        if key in data and data[key]:
+        if data.get(key):
             data[key] = "***redacted***"
     return data
 

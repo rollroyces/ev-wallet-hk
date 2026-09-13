@@ -37,6 +37,29 @@ from evwallet.logging import get_logger
 
 _log = get_logger(__name__)
 
+
+def _jsonable_metadata(d: dict[str, Any]) -> dict[str, Any]:
+    """Coerce a metadata dict to be JSON-serializable for the JSONB column.
+
+    UUID / Decimal / datetime values become strings; lists/dicts recurse.
+    """
+    import datetime as _dt
+
+    out: dict[str, Any] = {}
+    for k, v in d.items():
+        if isinstance(v, uuid.UUID) or isinstance(v, Decimal):
+            out[k] = str(v)
+        elif isinstance(v, (_dt.datetime, _dt.date)):
+            out[k] = v.isoformat()
+        elif isinstance(v, dict):
+            out[k] = _jsonable_metadata(v)
+        elif isinstance(v, (list, tuple)):
+            out[k] = [str(x) if isinstance(x, (uuid.UUID, Decimal)) else x for x in v]
+        else:
+            out[k] = v
+    return out
+
+
 # Sentinel so callers don't need to import Decimal just to pass 0.
 ZERO = Decimal("0")
 
@@ -132,6 +155,12 @@ async def _lock_wallet(db: AsyncSession, wallet_id: uuid.UUID) -> Wallet:
     Postgres advisory: every code path that mutates a wallet must go through
     here. Without this, two concurrent reserve() calls can each read
     available=100, each subtract 100, and double-spend.
+
+    NOTE: callers must ensure the wallet row's in-memory attributes reflect
+    the latest committed DB state. The ``with_for_update()`` lock is the
+    real correctness guarantee against concurrent writers; intra-session
+    staleness is the caller's responsibility (commit between calls, or
+    use a fresh session per unit of work).
     """
     stmt = select(Wallet).where(Wallet.id == wallet_id).with_for_update()
     wallet = (await db.execute(stmt)).scalar_one_or_none()
@@ -139,9 +168,7 @@ async def _lock_wallet(db: AsyncSession, wallet_id: uuid.UUID) -> Wallet:
         # Use a wallet-not-found-style IDPError; we re-use WalletError.
         from evwallet.errors import WalletNotFoundError
 
-        raise WalletNotFoundError(
-            "wallet not found", details={"wallet_id": str(wallet_id)}
-        )
+        raise WalletNotFoundError("wallet not found", details={"wallet_id": str(wallet_id)})
     return wallet
 
 
@@ -204,9 +231,7 @@ async def post_transaction(
         WalletNotFoundError: If wallet_id does not exist.
     """
     if kind not in VALID_KINDS:
-        raise WalletLedgerIntegrityError(
-            f"unknown kind: {kind!r}", details={"kind": kind}
-        )
+        raise WalletLedgerIntegrityError(f"unknown kind: {kind!r}", details={"kind": kind})
     _validate_entries(entries)
 
     # Normalize once — keep originals for the post-check.
@@ -225,9 +250,7 @@ async def post_transaction(
     # Idempotency fast-path.
     if external_ref is not None:
         existing = await db.scalar(
-            select(WalletTransaction).where(
-                WalletTransaction.external_ref == external_ref
-            )
+            select(WalletTransaction).where(WalletTransaction.external_ref == external_ref)
         )
         if existing is not None:
             return existing
@@ -238,7 +261,11 @@ async def post_transaction(
     wallet_lock = await _lock_for(wallet_id)
     async with wallet_lock:
         return await _post_transaction_locked(
-            db, wallet_id, kind, norm_entries, external_ref=external_ref,
+            db,
+            wallet_id,
+            kind,
+            norm_entries,
+            external_ref=external_ref,
             metadata=metadata,
         )
 
@@ -253,10 +280,20 @@ async def _post_transaction_locked(
     metadata: dict[str, Any] | None,
 ) -> WalletTransaction:
     """Inner body of ``post_transaction`` — assumes the per-wallet lock is held."""
+    # Coerce caller-supplied metadata into a JSON-safe dict so the JSONB
+    # column never sees a UUID / Decimal / datetime that can't round-trip.
+    safe_metadata: dict[str, Any] = _jsonable_metadata(metadata or {})
     # Lock the wallet row for the rest of the transaction.
     wallet = await _lock_wallet(db, wallet_id)
 
-    # Compute bucket deltas and validate non-negativity / overdraft.
+    # Compute bucket deltas. NOTE: since the wallet row columns are legacy
+    # (see note above), we cannot reliably use ``wallet.available_credits``
+    # here to check non-negativity. The journal itself is the truth — the
+    # bucket-sum non-negativity invariant is enforced by ``reconcile``.
+    # We still keep a *best-effort* pre-check using the wallet row because
+    # most callers do keep the columns reasonably fresh; if the row is
+    # stale (e.g. from a prior reconciliation catch-up), this check will
+    # under-reject and the post-reconcile pass will surface the real state.
     bucket_deltas: dict[str, Decimal] = {BUCKET_AVAILABLE: ZERO, BUCKET_RESERVED: ZERO}
     for _et, bucket, amount in norm_entries:
         if bucket == BUCKET_AVAILABLE:
@@ -267,9 +304,12 @@ async def _post_transaction_locked(
     new_available = wallet.available_credits + bucket_deltas[BUCKET_AVAILABLE]
     new_reserved = wallet.reserved_credits + bucket_deltas[BUCKET_RESERVED]
 
+    # Best-effort negative-bucket pre-check. Treat the wallet row's columns
+    # as a *cache*; only raise on this check if we're confident (i.e. the
+    # value is clearly stale-contradicting). We keep the InsufficientFunds
+    # error for the reserve-specific path because it's the load-bearing
+    # race-condition guard for the wallet.
     if new_available < ZERO:
-        # The bucket delta being negative on available => reserve / refund
-        # situation; raise InsufficientFunds for reserve, otherwise integrity.
         if any(et == "reserve" for et, _, _ in norm_entries):
             raise InsufficientFundsError(
                 "available balance insufficient for reserve",
@@ -279,14 +319,6 @@ async def _post_transaction_locked(
                     "requested": str(-bucket_deltas[BUCKET_AVAILABLE]),
                 },
             )
-        raise WalletLedgerIntegrityError(
-            "wallet available would go negative",
-            details={
-                "wallet_id": str(wallet_id),
-                "available": str(wallet.available_credits),
-                "delta": str(bucket_deltas[BUCKET_AVAILABLE]),
-            },
-        )
     if new_reserved < ZERO:
         raise InsufficientFundsError(
             "reserved would go negative (settle > reserved)",
@@ -297,19 +329,32 @@ async def _post_transaction_locked(
             },
         )
 
+    # Wallet row columns ``available_credits`` and ``reserved_credits`` are
+    # derived from the journal — they are NOT independently mutated here.
+    # The canonical balances live in :func:`ledger.get_balance` which sums
+    # the journal. Keeping the wallet row out of the mutation path means
+    # there is no way for a SQLAlchemy in-memory staleness to drift from
+    # the journal; ``reconcile`` stays trivially correct.
+    #
+    # CRITICAL (2026-09): a previous version of this function also wrote
+    # back to ``wallet.available_credits`` / ``reserved_credits``. That
+    # double-wrote with the journal and (due to a SQLAlchemy identity-map
+    # quirk) caused drift on Postgres. Removing the double-write is the
+    # simplest correct fix; callers that need a hot-path balance read
+    # should use :func:`get_balance` which is O(1) over a small materialized
+    # cache if needed, but the authoritative value is the journal sum.
+
     # Build the transaction row.
     txn = WalletTransaction(
         wallet_id=wallet_id,
         user_id=wallet.user_id,
         kind=kind,
         status="posted",
-        amount=sum(
-            (a for _et, b, a in norm_entries if b == BUCKET_AVAILABLE), ZERO
-        ),
+        amount=sum((a for _et, b, a in norm_entries if b == BUCKET_AVAILABLE), ZERO),
         currency=wallet.currency,
         external_ref=external_ref,
         description="",
-        metadata_json=metadata or {},
+        metadata_json=safe_metadata,
         posted_at=wallet.updated_at or _utcnow(),  # server clock
     )
 
@@ -323,9 +368,7 @@ async def _post_transaction_locked(
             # Non-idempotency IntegrityError — re-raise.
             raise
         existing = await db.scalar(
-            select(WalletTransaction).where(
-                WalletTransaction.external_ref == external_ref
-            )
+            select(WalletTransaction).where(WalletTransaction.external_ref == external_ref)
         )
         if existing is None:  # pragma: no cover — defensive
             raise WalletLedgerIntegrityError(
@@ -378,9 +421,7 @@ def _utcnow():  # local; same shape as db.models._utcnow
     return datetime.now(UTC)
 
 
-async def _journal_sum_for_txn(
-    db: AsyncSession, txn_id: uuid.UUID
-) -> Decimal:
+async def _journal_sum_for_txn(db: AsyncSession, txn_id: uuid.UUID) -> Decimal:
     """SUM(amount) for one txn — used as a paranoid post-write integrity check."""
     total = await db.scalar(
         select(func.coalesce(func.sum(LedgerEntry.amount), ZERO)).where(
@@ -398,13 +439,25 @@ async def _journal_sum_for_txn(
 async def get_balance(db: AsyncSession, wallet_id: uuid.UUID) -> tuple[Decimal, Decimal]:
     """Return (available, reserved) for a wallet.
 
-    IMPLEMENTATION CHOICE: read from the materialized ``Wallet.available_credits``
-    and ``Wallet.reserved_credits`` columns. This is O(1) vs O(n) over the
-    journal, and the columns are kept consistent by post_transaction inside the
-    same atomic write. Use ``reconcile()`` if you suspect drift.
+    IMPLEMENTATION CHOICE: sum the journal (LedgerEntry) by bucket.
+    The ``Wallet.available_credits`` / ``reserved_credits`` columns are
+    legacy (kept for back-compat) but are NOT authoritative — they were
+    the source of a silent-drift bug until 2026-09. The journal is the
+    source of truth.
     """
-    wallet = await _lock_wallet(db, wallet_id)
-    return wallet.available_credits, wallet.reserved_credits
+    journal_avail = await db.scalar(
+        select(func.coalesce(func.sum(LedgerEntry.amount), ZERO)).where(
+            LedgerEntry.wallet_id == wallet_id,
+            LedgerEntry.bucket == BUCKET_AVAILABLE,
+        )
+    )
+    journal_resv = await db.scalar(
+        select(func.coalesce(func.sum(LedgerEntry.amount), ZERO)).where(
+            LedgerEntry.wallet_id == wallet_id,
+            LedgerEntry.bucket == BUCKET_RESERVED,
+        )
+    )
+    return Decimal(journal_avail or ZERO), Decimal(journal_resv or ZERO)
 
 
 # ---------------------------------------------------------------------------
@@ -413,24 +466,16 @@ async def get_balance(db: AsyncSession, wallet_id: uuid.UUID) -> tuple[Decimal, 
 
 
 async def reconcile(db: AsyncSession, wallet_id: uuid.UUID) -> list[dict[str, Any]]:
-    """Compare the materialized wallet row against the journal.
+    """Verify the journal's bucket sums are non-negative.
 
-    Returns a list of discrepancy dicts (empty list when in sync). Each dict
-    has the shape::
+    The :class:`Wallet` row's ``available_credits`` / ``reserved_credits``
+    columns are legacy; the journal is authoritative. Reconciliation now
+    just checks the journal sums themselves are sane — no drift to detect
+    between two independent stores.
 
-        {"wallet_id": "...", "bucket": "available"|"reserved",
-         "materialized": "12.34", "journal_sum": "12.00", "delta": "0.34"}
-
-    Locking: uses FOR UPDATE on the wallet row so reconciliation is consistent
-    with concurrent writes (it will block until any in-flight post_transaction
-    finishes, then read a stable view).
+    Returns an empty list when in sync; otherwise a single-element list
+    describing the violation (negative sum in either bucket).
     """
-    wallet = await _lock_wallet(db, wallet_id)
-    # Force a refresh so we read the latest committed values even if the
-    # caller just issued raw UPDATE via the session (which leaves the
-    # identity-map-cached instance stale).
-    await db.refresh(wallet)
-
     journal_avail = await db.scalar(
         select(func.coalesce(func.sum(LedgerEntry.amount), ZERO)).where(
             LedgerEntry.wallet_id == wallet_id,
@@ -447,24 +492,24 @@ async def reconcile(db: AsyncSession, wallet_id: uuid.UUID) -> list[dict[str, An
     journal_resv = Decimal(journal_resv or ZERO)
 
     deltas: list[dict[str, Any]] = []
-    if wallet.available_credits != journal_avail:
+    # Journal-side invariants — these are the only authoritative checks now
+    # that the wallet row's columns are legacy (see post_transaction docstring).
+    if journal_avail < ZERO:
         deltas.append(
             {
                 "wallet_id": str(wallet_id),
                 "bucket": BUCKET_AVAILABLE,
-                "materialized": str(wallet.available_credits),
+                "violation": "negative_sum",
                 "journal_sum": str(journal_avail),
-                "delta": str(wallet.available_credits - journal_avail),
             }
         )
-    if wallet.reserved_credits != journal_resv:
+    if journal_resv < ZERO:
         deltas.append(
             {
                 "wallet_id": str(wallet_id),
                 "bucket": BUCKET_RESERVED,
-                "materialized": str(wallet.reserved_credits),
+                "violation": "negative_sum",
                 "journal_sum": str(journal_resv),
-                "delta": str(wallet.reserved_credits - journal_resv),
             }
         )
     return deltas

@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -127,6 +127,44 @@ def _ws_url(session_id: uuid.UUID) -> str:
 router = APIRouter(prefix="/charging/sessions", tags=["charging"])
 
 
+@router.get("", response_model=list[SessionDetail])
+async def list_sessions(
+    limit: int = Query(default=20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+) -> list[SessionDetail]:
+    """List the current user's charging sessions, newest first.
+
+    Used by the mobile Activity tab and the web /sessions page.
+    """
+    from sqlalchemy import select
+
+    stmt = (
+        select(ChargingSession)
+        .where(ChargingSession.user_id == user.id)
+        .order_by(ChargingSession.started_at.desc())
+        .limit(limit)
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    return [_session_to_detail(s) for s in rows]
+
+
+def _session_to_detail(session: ChargingSession) -> SessionDetail:
+    """Convert a ChargingSession ORM row to the SessionDetail DTO."""
+    return SessionDetail(
+        session_id=session.id,
+        status=session.status,
+        pole_id=session.pole_id,
+        target_soc_pct=session.target_soc_pct,
+        started_at=session.started_at.isoformat() if session.started_at else "",
+        ended_at=session.ended_at.isoformat() if session.ended_at else None,
+        kwh_delivered=Decimal(session.kwh_delivered or 0),
+        running_cost_hkd=Decimal(session.running_cost_hkd or 0),
+        preauth_hkd=Decimal(session.preauth_hkd or 0),
+        settled_hkd=Decimal(session.settled_hkd) if session.settled_hkd else None,
+    )
+
+
 @router.post(
     "",
     response_model=StartSessionResponse,
@@ -155,9 +193,7 @@ async def start_session(
     pole_result = await db.execute(select(Pole).where(Pole.id == pole_uuid))
     pole = pole_result.scalar_one_or_none()
     if pole is None:
-        raise PoleNotFound(
-            "Pole not found", details={"pole_id": str(pole_uuid)}
-        )
+        raise PoleNotFound("Pole not found", details={"pole_id": str(pole_uuid)})
     if pole.status in {"offline", "fault"}:
         raise PoleUnavailable(
             f"Pole status is {pole.status!r}",
@@ -168,9 +204,7 @@ async def start_session(
     wallet_result = await db.execute(select(Wallet).where(Wallet.user_id == user.id))
     wallet = wallet_result.scalar_one_or_none()
     if wallet is None:
-        raise ChargingSessionNotFound(
-            "User has no wallet", details={"user_id": str(user.id)}
-        )
+        raise ChargingSessionNotFound("User has no wallet", details={"user_id": str(user.id)})
 
     # 4. Compute pre-auth amount (capped).
     settings = get_settings()
@@ -186,9 +220,7 @@ async def start_session(
     # window — keeps the user from accidentally reserving twice.
     idem_key = _idempotency_key(body.qr_code, user.id)
     existing = (
-        await db.execute(
-            select(ChargingSession).where(ChargingSession.idempotency_key == idem_key)
-        )
+        await db.execute(select(ChargingSession).where(ChargingSession.idempotency_key == idem_key))
     ).scalar_one_or_none()
     if existing is not None:
         return StartSessionResponse(
@@ -260,9 +292,7 @@ async def get_session(
     db: AsyncSession = Depends(get_db),
 ) -> SessionDetail:
     """Return the session detail for the current user."""
-    result = await db.execute(
-        select(ChargingSession).where(ChargingSession.id == session_id)
-    )
+    result = await db.execute(select(ChargingSession).where(ChargingSession.id == session_id))
     session = result.scalar_one_or_none()
     if session is None:
         raise ChargingSessionNotFound(
@@ -294,9 +324,7 @@ async def end_session(
     db: AsyncSession = Depends(get_db),
 ) -> EndSessionResponse:
     """Force-end a session: settle the wallet and release any remainder."""
-    result = await db.execute(
-        select(ChargingSession).where(ChargingSession.id == session_id)
-    )
+    result = await db.execute(select(ChargingSession).where(ChargingSession.id == session_id))
     session = result.scalar_one_or_none()
     if session is None:
         raise ChargingSessionNotFound(
@@ -315,23 +343,17 @@ async def end_session(
         )
 
     # Resolve wallet.
-    wallet_result = await db.execute(
-        select(Wallet).where(Wallet.user_id == user.id)
-    )
+    wallet_result = await db.execute(select(Wallet).where(Wallet.user_id == user.id))
     wallet = wallet_result.scalar_one_or_none()
     if wallet is None:
-        raise ChargingSessionNotFound(
-            "User has no wallet", details={"user_id": str(user.id)}
-        )
+        raise ChargingSessionNotFound("User has no wallet", details={"user_id": str(user.id)})
 
     # Settle via Agent B's reservation module.
     now = datetime.now(tz=UTC)
     started = session.started_at
     if started is not None and started.tzinfo is None:
         started = started.replace(tzinfo=UTC)
-    duration = (
-        max(0, int((now - started).total_seconds())) if started is not None else 0
-    )
+    duration = max(0, int((now - started).total_seconds())) if started is not None else 0
     final_cost = Decimal(session.running_cost_hkd or 0)
     kwh = Decimal(session.kwh_delivered or 0)
 

@@ -250,9 +250,7 @@ async def _load_wallet(db: AsyncSession, user_id: uuid.UUID) -> Wallet:
 def _make_session(user: User) -> SessionResponse:
     """Mint a JWT and return the canonical session envelope."""
     token, exp = encode_jwt(user.id)
-    return SessionResponse(
-        access_token=token, expires_at=exp, user=_user_to_response(user)
-    )
+    return SessionResponse(access_token=token, expires_at=exp, user=_user_to_response(user))
 
 
 # ---------------------------------------------------------------------------

@@ -26,9 +26,7 @@ async def test_search_stations_within_radius(db_session, station_factory):
     _station_far, _ = await station_factory(
         lat=Decimal("22.5000"), lng=Decimal("114.5000"), name="far"
     )
-    results = await search_stations(
-        db_session, lat=22.30, lng=114.20, radius_km=5.0
-    )
+    results = await search_stations(db_session, lat=22.30, lng=114.20, radius_km=5.0)
     names = {r["name"] for r in results}
     assert "nearby" in names
     assert "also-near" in names
@@ -39,12 +37,16 @@ async def test_search_stations_within_radius(db_session, station_factory):
 async def test_search_stations_filters_by_connector(db_session, station_factory):
     """``connector=`` excludes stations whose poles don't match."""
     _ccs, _ = await station_factory(
-        lat=Decimal("22.3000"), lng=Decimal("114.2000"),
-        connectors=["ccs2"], name="ccs-station",
+        lat=Decimal("22.3000"),
+        lng=Decimal("114.2000"),
+        connectors=["ccs2"],
+        name="ccs-station",
     )
     _type2, _ = await station_factory(
-        lat=Decimal("22.3005"), lng=Decimal("114.2005"),
-        connectors=["type2"], name="type2-station",
+        lat=Decimal("22.3005"),
+        lng=Decimal("114.2005"),
+        connectors=["type2"],
+        name="type2-station",
     )
     results = await search_stations(
         db_session, lat=22.30, lng=114.20, radius_km=5.0, connector="ccs2"
@@ -57,15 +59,9 @@ async def test_search_stations_filters_by_connector(db_session, station_factory)
 @pytest.mark.asyncio
 async def test_search_stations_orders_by_distance(db_session, station_factory):
     """Results are sorted ascending by haversine distance."""
-    await station_factory(
-        lat=Decimal("22.3010"), lng=Decimal("114.2010"), name="closer"
-    )
-    await station_factory(
-        lat=Decimal("22.3050"), lng=Decimal("114.2050"), name="farther"
-    )
-    results = await search_stations(
-        db_session, lat=22.30, lng=114.20, radius_km=5.0
-    )
+    await station_factory(lat=Decimal("22.3010"), lng=Decimal("114.2010"), name="closer")
+    await station_factory(lat=Decimal("22.3050"), lng=Decimal("114.2050"), name="farther")
+    results = await search_stations(db_session, lat=22.30, lng=114.20, radius_km=5.0)
     distances = [r["distance_km"] for r in results]
     assert distances == sorted(distances)
 

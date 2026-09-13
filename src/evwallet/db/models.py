@@ -24,6 +24,7 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     CheckConstraint,
     DateTime,
@@ -31,13 +32,11 @@ from sqlalchemy import (
     Index,
     Integer,
     Numeric,
-    SmallInteger,
     String,
     Text,
     Time,
     UniqueConstraint,
     func,
-    JSON,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -66,6 +65,7 @@ class JSONColumn(TypeDecorator):
         if dialect.name == "postgresql":
             return dialect.type_descriptor(JSONB())
         return dialect.type_descriptor(JSON())
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -101,9 +101,7 @@ class User(Base):
         primary_key=True,
         server_default=func.gen_random_uuid(),
     )
-    email: Mapped[str | None] = mapped_column(
-        String(254), unique=True, index=True, nullable=True
-    )
+    email: Mapped[str | None] = mapped_column(String(254), unique=True, index=True, nullable=True)
     phone_e164: Mapped[str | None] = mapped_column(
         String(20), unique=True, index=True, nullable=True
     )
@@ -270,9 +268,7 @@ class WalletTransaction(Base):
         nullable=False,
     )
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
-    status: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="posted"
-    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="posted")
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="HKD")
     external_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -356,9 +352,7 @@ class ChargingStation(Base):
 
     __tablename__ = "charging_stations"
     __table_args__ = (
-        UniqueConstraint(
-            "provider_code", "external_id", name="stations_provider_external_uniq"
-        ),
+        UniqueConstraint("provider_code", "external_id", name="stations_provider_external_uniq"),
         Index("ix_charging_stations_lat_lng", "latitude", "longitude"),
     )
 
@@ -377,9 +371,7 @@ class ChargingStation(Base):
     parking_fee_hkd: Mapped[Decimal] = mapped_column(
         Numeric(12, 4), nullable=False, default=Decimal("0")
     )
-    amenities: Mapped[list[str]] = mapped_column(
-        JSONColumn, nullable=False, default=list
-    )
+    amenities: Mapped[list[str]] = mapped_column(JSONColumn, nullable=False, default=list)
     raw_payload: Mapped[dict[str, Any]] = mapped_column(
         "raw", JSONColumn, nullable=False, default=dict
     )
@@ -441,9 +433,7 @@ class Pole(Base):
     speed_tier: Mapped[str] = mapped_column(String(16), nullable=False)
     max_kw: Mapped[Decimal] = mapped_column(Numeric(8, 2), nullable=False)
     qr_code: Mapped[str] = mapped_column(String(512), nullable=False)
-    status: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="unknown"
-    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="unknown")
     status_updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )
@@ -455,9 +445,7 @@ class Pole(Base):
         DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow
     )
 
-    station: Mapped[ChargingStation] = relationship(
-        "ChargingStation", back_populates="poles"
-    )
+    station: Mapped[ChargingStation] = relationship("ChargingStation", back_populates="poles")
     rates: Mapped[list[HourlyRate]] = relationship(
         "HourlyRate", back_populates="pole", cascade="all, delete-orphan"
     )
@@ -474,19 +462,16 @@ class HourlyRate(Base):
     __tablename__ = "hourly_rates"
     __table_args__ = (
         UniqueConstraint(
-            "pole_id", "day_of_week", "hour_start_local", "valid_from",
+            "pole_id",
+            "day_of_week",
+            "hour_start_local",
+            "valid_from",
             name="hourly_rates_uniq",
         ),
         Index("ix_hourly_rates_pole_id", "pole_id"),
-        CheckConstraint(
-            "day_of_week BETWEEN 0 AND 6", name="hourly_rates_dow_range"
-        ),
-        CheckConstraint(
-            "price_per_kwh_hkd >= 0", name="hourly_rates_price_nonneg"
-        ),
-        CheckConstraint(
-            "parking_fee_hkd >= 0", name="hourly_rates_parking_nonneg"
-        ),
+        CheckConstraint("day_of_week BETWEEN 0 AND 6", name="hourly_rates_dow_range"),
+        CheckConstraint("price_per_kwh_hkd >= 0", name="hourly_rates_price_nonneg"),
+        CheckConstraint("parking_fee_hkd >= 0", name="hourly_rates_parking_nonneg"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -504,9 +489,7 @@ class HourlyRate(Base):
     valid_from: Mapped[date] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )
-    valid_to: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
@@ -562,22 +545,16 @@ class ChargingSession(Base):
         ForeignKey("wallet_transactions.id", ondelete="SET NULL"),
         nullable=True,
     )
-    status: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="pending"
-    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     target_soc_pct: Mapped[int | None] = mapped_column(Integer, nullable=True)
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )
-    ended_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     kwh_delivered: Mapped[Decimal] = mapped_column(
         Numeric(12, 4), nullable=False, default=Decimal("0")
     )
-    peak_kw: Mapped[Decimal] = mapped_column(
-        Numeric(8, 2), nullable=False, default=Decimal("0")
-    )
+    peak_kw: Mapped[Decimal] = mapped_column(Numeric(8, 2), nullable=False, default=Decimal("0"))
     running_cost_hkd: Mapped[Decimal] = mapped_column(
         Numeric(12, 4), nullable=False, default=Decimal("0")
     )
@@ -627,19 +604,36 @@ class SessionTelemetry(Base):
         ForeignKey("charging_sessions.id", ondelete="CASCADE"),
         nullable=False,
     )
-    ts: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_utcnow
-    )
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
     kwh_cumulative: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
     kw_instant: Mapped[Decimal] = mapped_column(Numeric(8, 2), nullable=False)
     soc_pct: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    cost_hkd_cumulative: Mapped[Decimal] = mapped_column(
-        Numeric(12, 4), nullable=False
-    )
+    cost_hkd_cumulative: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
     raw: Mapped[dict[str, Any]] = mapped_column(JSONColumn, nullable=False, default=dict)
 
-    session: Mapped[ChargingSession] = relationship(
-        "ChargingSession", back_populates="telemetry"
+    session: Mapped[ChargingSession] = relationship("ChargingSession", back_populates="telemetry")
+
+
+# ---------------------------------------------------------------------------
+# Push tokens — registered by the mobile app for APNs/FCM notifications.
+# ---------------------------------------------------------------------------
+
+
+class PushToken(Base):
+    __tablename__ = "push_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    token: Mapped[str] = mapped_column(String(512), unique=True)
+    platform: Mapped[str] = mapped_column(String(16))  # 'ios' | 'android'
+    device_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
 
@@ -654,6 +648,7 @@ __all__ = [
     "HourlyRate",
     "LedgerEntry",
     "Pole",
+    "PushToken",
     "SessionTelemetry",
     "SocialAccount",
     "User",

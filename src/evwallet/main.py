@@ -75,9 +75,8 @@ class _TraceIdContext:
 
     def __init__(self) -> None:
         import contextvars
-        self._var: contextvars.ContextVar[str] = contextvars.ContextVar(
-            "trace_id", default="-"
-        )
+
+        self._var: contextvars.ContextVar[str] = contextvars.ContextVar("trace_id", default="-")
 
     def set(self, value: str) -> Any:
         return self._var.set(value)
@@ -154,7 +153,10 @@ def _idp_error_handler(request: Request, exc: IDPError) -> JSONResponse:
     envelope = exc.to_envelope(trace_id=trace_id)
     _log.warning(
         "idp_error code=%s status=%s message=%s trace_id=%s",
-        exc.code, exc.status, exc.message, trace_id,
+        exc.code,
+        exc.status,
+        exc.message,
+        trace_id,
     )
     metrics.inc("idp_error_total", code=exc.code)
     return JSONResponse(status_code=exc.status, content=envelope)
@@ -166,9 +168,7 @@ def _unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
     Prevents leaking stack traces or internal error details to clients.
     """
     trace_id = getattr(request.state, "trace_id", None)
-    _log.exception(
-        "unhandled error trace_id=%s type=%s", trace_id, type(exc).__name__
-    )
+    _log.exception("unhandled error trace_id=%s type=%s", trace_id, type(exc).__name__)
     metrics.inc("unhandled_error_total")
     return JSONResponse(
         status_code=500,
@@ -200,7 +200,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     _log.info(
         "evwallet starting version=%s env=%s settings=%s",
-        __version__, settings.env, settings_as_dict(settings),
+        __version__,
+        settings.env,
+        settings_as_dict(settings),
     )
 
     # Install the trace-id filter on the root logger.
@@ -211,6 +213,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Eager DB engine creation so misconfiguration surfaces at startup.
     try:
         from evwallet.db.session import get_engine  # local import
+
         get_engine()
     except Exception:
         _log.exception("db engine initialisation failed")
@@ -245,8 +248,7 @@ async def _redis_ping() -> bool:
     # Default to a localhost URL when unset so the ping fails predictably
     # rather than crashing the import chain.
     redis_dsn = settings.redis_url or (
-        f"redis://:{settings.redis_password}@{settings.redis_host}:"
-        f"{settings.redis_port}/0"
+        f"redis://:{settings.redis_password}@{settings.redis_host}:{settings.redis_port}/0"
     )
     client = redis.from_url(redis_dsn, decode_responses=True)
     try:
@@ -312,6 +314,20 @@ def create_app() -> FastAPI:
 
     # Routers
     app.include_router(auth_router)
+
+    # Domain routers (added during console/validate to wire all agents together)
+    from evwallet.charging.router import build_router as _build_charging_router
+    from evwallet.stations.router import build_router as _build_stations_router
+    from evwallet.wallet.router import build_router as _build_wallet_router
+
+    app.include_router(_build_wallet_router(), prefix="/api/v1")
+    app.include_router(_build_charging_router(), prefix="/api/v1")
+    app.include_router(_build_stations_router(), prefix="/api/v1")
+
+    # Internal endpoints (n8n ingestion + admin views)
+    from evwallet.internal.router import build_router as _build_internal_router
+
+    app.include_router(_build_internal_router(), prefix="/api/v1")
 
     # --- Health / readiness / version / metrics -----------------------
 

@@ -1,13 +1,39 @@
 # License
 
-EV Wallet HK is dual-licensed:
+**EV Wallet HK — Commercial License (Proprietary)**
 
-1. **AGPL-3.0-or-later** (`LICENSE-AGPL`) — open-source. Free for use, modification, and distribution under AGPL terms. Modifications served over a network MUST publish their source.
+Copyright © 2026 rollroyces.
 
-2. **Commercial** — for proprietary/SaaS embedding without AGPL copyleft. Contact for terms.
+This source code is published for **visibility, review, and contribution-back** purposes. **No license is granted to use, copy, modify, merge, publish, distribute, sublicense, or sell this software** without a written commercial agreement with the copyright holder.
 
-This is the same model used by MariaDB, Sentry, and MinIO.
+You may:
+- Read and review the source code
+- Submit bug reports and pull requests (which become licensed under the project terms)
+- Fork the repository for personal evaluation that does NOT result in production use
+
+You may NOT, without a written license:
+- Run this software in production (commercial or otherwise)
+- Use this software to provide a service to third parties
+- Embed this software in any product (open-source or proprietary)
+- Distribute binaries, containers, or compiled forms
+
+For commercial licensing terms, contact the copyright holder. Indicative tiers:
+
+| Tier | Use case | Indicative annual fee |
+|---|---|---|
+| Solo | One developer, one site | HK$50,000/yr |
+| Team | Up to 10 devs, up to 5 sites | HK$200,000/yr |
+| Enterprise | Unlimited | Contact for quote |
+| SaaS-OEM | Embed in your product | HK$500,000+/yr |
+
+See `LICENSE-COMMERCIAL.md` for the full template agreement.
+
+## Prior contributions
+
+Anyone who submitted a pull request that was merged prior to 2026-09-13 retains their original contribution under the contributor's own terms as documented in the corresponding commits. New contributions after this date are governed by the terms above.
 
 ```
-SPDX-License-Identifier: AGPL-3.0-or-later
+SPDX-License-Identifier: LicenseRef-Proprietary-Commercial
 ```
+
+No OSI-approved license applies. This is intentional.

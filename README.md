@@ -154,6 +154,4 @@ See `SECURITY.md` for the threat model and disclosure process.
 
 ## License
 
-AGPL-3.0-or-later. See `LICENSE` for the summary; the full text is in `LICENSE-AGPL`.
-
-For proprietary/SaaS embedding without AGPL copyleft, contact for a commercial license.
+**Commercial (Proprietary).** This source code is published for visibility — no permission to run, copy, modify, or distribute is granted without a written commercial agreement. See `LICENSE` for the summary and `LICENSE-COMMERCIAL.md` for the template agreement with indicative pricing tiers.

@@ -15,3 +15,20 @@ final integration phase.
 - [ ] Replace vendored SHA-256 in JS Code node with proper Function node when n8n 1.94.x exposes `crypto`
 
 ## Will be appended as other agents return
+
+## From Agent D (mobile app) — DONE
+
+### Contract deviations (mobile ApiClient adds 3 methods beyond ARCHITECTURE.md)
+
+- [ ] `registerPushToken(req): Promise<Result>` — POST `/api/v1/auth/push-tokens`. Agent A must add this endpoint.
+- [ ] `getSession(id): Promise<ChargingSession>` — GET `/api/v1/charging/sessions/{id}` (actually already in ARCHITECTURE.md, no new endpoint needed; just verify)
+- [ ] `getSessions(limit?): Promise<ChargingSession[]>` — GET `/api/v1/charging/sessions?limit=N`. Agent A must add this paginated list endpoint.
+
+### Pre-ship TODOs
+
+- [ ] `mobile/assets/icon.png` + `mobile/assets/splash.png` — referenced in `app.config.ts` but currently commented out; add real PNGs and uncomment
+- [ ] `mobile/app.config.ts` `extra.eas.projectId` — replace placeholder UUID with real EAS project ID
+- [ ] `mobile/app.config.ts` `android.config.googleMaps.apiKey` — add Google Maps API key for Android map tile rendering
+- [ ] APNs key + FCM `google-services.json` — wire through `expo-notifications` plugin before shipping
+- [ ] `mobile/app/(auth)/login.tsx` — auth UX is out of scope for this PR; AuthProvider ready, screens pending
+- [ ] `web/lib/types.ts` MUST mirror `mobile/lib/types.ts` byte-for-byte (Agent E) — validate with `diff`

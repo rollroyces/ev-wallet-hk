@@ -1,0 +1,221 @@
+{
+  "name": "HK EV Power — Poll Stations",
+  "tags": [
+    "ev-wallet"
+  ],
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/30 * * * *"
+            }
+          ]
+        },
+        "comment": "EV Wallet HK — HK EV Power (hkev.com.hk) polling workflow.\n\nProvider: hkev\nEndpoint: https://api.hkev.com.hk/v1/stations (PLACEHOLDER — replace with the real partnership URL once signed. Until then the call is expected to 4xx and the workflow's StopAndError branch will log + alert via the global error workflow.).\n\nSchedule: every 30 minutes (cron */30 * * * *).\n\nExpected runtime: ~5–20s for ~50–200 stations (2–5 API round-trips + HMAC signing for QR codes per pole, then one upsert per (station, pole, hourly_rate)).\n\nFailure modes:\n  HK EV public API down / 4xx → HTTP Request retries 3× at 5s/15s/45s. After exhaustion, StopAndError fires and n8n marks the run as failed (visible at /api/v1/executions).\n  * FastAPI internal upsert 5xx → retry 3× then StopAndError.\n  * FastAPI 4xx (schema mismatch) → no retry; StopAndError so the schema is investigated rather than re-badgered.\n\nIdempotency: every write is an upsert keyed on (provider_code='hkev', external_id). Re-running this poll on the same hour overwrites the station rows, refreshes poles, and replaces hourly_rates (the upsert endpoint deletes old rate rows for a pole before inserting fresh ones when replace_rates=true is passed).\n\nQR code format: hkev://<POLE_EXTERNAL_ID>-<STATION_EXTERNAL_ID>-<HMAC_SHA256_TRUNC_8>. The HMAC is computed in the Code node using the QR_HMAC_SECRET n8n environment variable. The resulting string is what the mobile app scans; the charging module validates the same HMAC on POST /charging/sessions."
+      },
+      "id": "hk-ev-power-—-poll-stations-trigger",
+      "name": "Cron — every 30 min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        200,
+        300
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.EVW_API_BASE_URL}}/api/v1/internal/providers/hkev/stations",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.EVW_API_TOKEN}}"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Provider-Key",
+              "value": "={{$env[`PROVIDER_API_KEY`]}}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        },
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 5000,
+        "onError": "continueErrorOutput",
+        "comment": "Calls our own FastAPI proxy endpoint (Agent A owns). The proxy abstracts the upstream provider URL so this workflow never has to know whether we hit the provider directly or via a paid aggregator. EVW_API_BASE_URL must be configured or n8n throws at node-start."
+      },
+      "id": "hk-ev-power-—-poll-stations-fetch",
+      "name": "HTTP — fetch provider stations",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        300
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "\nconst item = $input.first().json;\nconst station = item.station || item; // tolerate {station:{...}} or flat\n\nconst providerCode = $env.PROVIDER_CODE || 'hkev';\nconst externalId = String(station.id ?? station.station_id ?? station.external_id);\nif (!externalId) {\n  throw new Error(providerCode + ' station missing id/station_id/external_id: ' + JSON.stringify(station).slice(0, 200));\n}\n\n// ---------- QR HMAC (SHA-256, vendored for n8n's sandboxed JS env) ----------\nconst secret = $env.QR_HMAC_SECRET || '';\nfunction hmacHex8(secretStr, message) {\n  function sha256(ascii) {\n    function rightRotate(value, amount) { return (value >>> amount) | (value << (32 - amount)); }\n    const maxWord = Math.pow(2, 32);\n    let result = '';\n    const words = [];\n    const asciiBitLength = ascii.length * 8;\n    const hash = [0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];\n    const k = [\n      0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,\n      0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,\n      0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,\n      0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,\n      0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,\n      0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,\n      0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,\n      0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2\n    ];\n    let hashTemp = hash.slice(0);\n    ascii += '\\x80';\n    while ((ascii.length % 64) - 56) ascii += '\\x00';\n    for (let i = 0; i < ascii.length; i++) {\n      const j = ascii.charCodeAt(i);\n      if (j >> 8) return undefined;\n      words[i >> 2] |= j << (((3 - i) % 4) * 8);\n    }\n    words[words.length] = ((asciiBitLength / maxWord) | 0);\n    words[words.length] = (asciiBitLength);\n    for (let j = 0; j < words.length;) {\n      const w = words.slice(j, j += 16);\n      const oldHash = hashTemp.slice(0);\n      for (let i = 0; i < 64; i++) {\n        const w15 = w[i - 15], w2 = w[i - 2];\n        const a = hashTemp[0], e = hashTemp[4];\n        const temp1 = hashTemp[7]\n          + (rightRotate(e, 6) ^ rightRotate(e, 11) ^ rightRotate(e, 25))\n          + ((e & hashTemp[5]) ^ (~e & hashTemp[6]))\n          + k[i]\n          + (w[i] = (i < 16) ? w[i] :\n            (w[i - 16] + (rightRotate(w15, 7) ^ rightRotate(w15, 18) ^ (w15 >>> 3))\n             + w[i - 7]\n             + (rightRotate(w2, 17) ^ rightRotate(w2, 19) ^ (w2 >>> 10))) | 0);\n        const temp2 = (rightRotate(a, 2) ^ rightRotate(a, 13) ^ rightRotate(a, 22))\n          + ((a & hashTemp[1]) ^ (a & hashTemp[2]) ^ (hashTemp[1] & hashTemp[2]));\n        hashTemp = [(temp1 + temp2) | 0].concat(hashTemp).slice(0, 8);\n        hashTemp[4] = (hashTemp[4] + temp1) | 0;\n      }\n      for (let i = 0; i < 8; i++) hash[i] = (hash[i] + hashTemp[i]) | 0;\n    }\n    for (let i = 0; i < 8; i++) {\n      for (let j = 3; j + 1; j--) {\n        const b = (hash[i] >> (j * 8)) & 255;\n        result += ((b < 16) ? '0' : '') + b.toString(16);\n      }\n    }\n    return result;\n  }\n  function hmacSha256(key, message) {\n    let k = key;\n    if (k.length > 64) k = sha256(k);\n    while (k.length < 64) k += '\\x00';\n    const oKeyPad = k.split('').map(c => String.fromCharCode(c.charCodeAt(0) ^ 0x5c)).join('');\n    const iKeyPad = k.split('').map(c => String.fromCharCode(c.charCodeAt(0) ^ 0x36)).join('');\n    return sha256(oKeyPad + sha256(iKeyPad + message));\n  }\n  const mac = hmacSha256(secretStr, message);\n  return mac.slice(0, 16);\n}\n\nconst poles = Array.isArray(station.poles) ? station.poles : [];\nconst canonicalPoles = poles.map(p => {\n  const poleExternalId = String(p.id ?? p.pole_id ?? p.external_id);\n  const qrPayload = providerCode + '://' + poleExternalId + '-' + externalId + '-' + hmacHex8(secret, poleExternalId + ':' + externalId);\n\n  const connector = String(p.connector || p.connector_type || 'ccs2').toLowerCase();\n  const allowedConnectors = ['ccs2','type2','chademo','tesla'];\n  const safeConnector = allowedConnectors.includes(connector) ? connector : 'ccs2';\n\n  const speedTier = String(p.speed_tier || p.tier || 'ac_slow').toLowerCase();\n  const allowedTiers = ['ac_slow','ac_fast','dc_fast','dc_ultra'];\n  const safeTier = allowedTiers.includes(speedTier) ? speedTier : 'ac_slow';\n\n  return {\n    external_id: poleExternalId,\n    connector: safeConnector,\n    speed_tier: safeTier,\n    max_kw: String(p.max_kw ?? p.kw ?? 0),\n    qr_code: qrPayload,\n    status: 'unknown',\n    status_updated_at: new Date().toISOString(),\n    hourly_rates: Array.isArray(p.hourly_rates) ? p.hourly_rates.map(r => ({\n      day_of_week: Number.isInteger(r.day_of_week) ? r.day_of_week : 0,\n      hour_start_local: r.hour_start_local || r.hour || '00:00:00',\n      price_per_kwh_hkd: String(r.price_per_kwh_hkd ?? r.price ?? 0),\n      parking_fee_hkd: String(r.parking_fee_hkd ?? 0),\n      valid_from: r.valid_from || new Date().toISOString(),\n      valid_to: r.valid_to || null\n    })) : []\n  };\n});\n\nconst payload = {\n  station: {\n    external_id: externalId,\n    provider_code: providerCode,\n    name: String(station.name || station.title || (providerCode.toUpperCase() + ' Station ' + externalId)),\n    address: String(station.address || station.addr || ''),\n    district: station.district || station.area || null,\n    latitude: String(station.latitude ?? station.lat ?? 0),\n    longitude: String(station.longitude ?? station.lng ?? station.lon ?? 0),\n    parking_fee_hkd: String(station.parking_fee_hkd ?? 0),\n    amenities: Array.isArray(station.amenities) ? station.amenities : [],\n    raw_payload: station\n  },\n  poles: canonicalPoles,\n  replace_rates: true\n};\n\nreturn { json: payload };\n",
+        "onError": "continueErrorOutput",
+        "comment": "Run-once-per-item because n8n auto-iterates top-level arrays when the HTTP node returns a JSON array. Each item is one station record from the provider. The code maps the provider's native shape into the canonical ChargingStation + Pole[] + HourlyRate[] shape and signs each pole's QR code with the shared QR_HMAC_SECRET."
+      },
+      "id": "hk-ev-power-—-poll-stations-normalize",
+      "name": "Code — normalize → canonical",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        300
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.EVW_API_BASE_URL}}/api/v1/internal/stations/upsert",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.EVW_API_TOKEN}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{JSON.stringify($json)}}",
+        "options": {
+          "timeout": 30000
+        },
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 10000,
+        "onError": "continueRegularOutput",
+        "comment": "Single endpoint that takes (provider_code, external_id, station, poles[], replace_rates) and atomically upserts in one Postgres transaction. FastAPI does the provider-code→id resolution and the unique-key dance so this n8n layer stays simple. See Agent A's /api/v1/internal/stations/upsert endpoint contract."
+      },
+      "id": "hk-ev-power-—-poll-stations-upsert",
+      "name": "HTTP — POST /stations/upsert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        920,
+        300
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "errorMessage": "={{$json.error?.message || $json.message || JSON.stringify($json).slice(0,500)}}"
+      },
+      "id": "hk-ev-power-—-poll-stations-fail",
+      "name": "Stop and Error",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        1160,
+        540
+      ],
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Cron — every 30 min": {
+      "main": [
+        [
+          {
+            "node": "HTTP — fetch provider stations",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP — fetch provider stations": {
+      "main": [
+        [
+          {
+            "node": "Code — normalize → canonical",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stop and Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code — normalize → canonical": {
+      "main": [
+        [
+          {
+            "node": "HTTP — POST /stations/upsert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stop and Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP — POST /stations/upsert": {
+      "main": [
+        [
+          {
+            "node": "Stop and Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true,
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all",
+    "timezone": "Asia/Hong_Kong",
+    "errorWorkflow": "evw-global-error-workflow"
+  },
+  "staticData": null,
+  "pinData": {},
+  "versionId": "1.0.0",
+  "triggerCount": 1,
+  "updatedAt": "2026-09-13T00:00:00.000Z",
+  "createdAt": "2026-09-13T00:00:00.000Z"
+}

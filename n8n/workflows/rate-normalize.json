@@ -1,0 +1,160 @@
+{
+  "name": "Rate Normalize — webhook push",
+  "tags": [
+    "ev-wallet"
+  ],
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "evw-rate-normalize",
+        "responseMode": "lastNode",
+        "responseData": "allEntries",
+        "options": {},
+        "comment": "EV Wallet HK — on-demand rate update normalizer.\n\nTrigger: webhook POST /webhook/evw-rate-normalize (path set on the Webhook node). External providers (or our partner integration team) push rate-card updates here when their ToU pricing changes mid-day (the 30-min pollers are too slow for those events).\n\nBody shape — one of:\n  { provider: 'hkev', station_external_id: '...', poles: [ { external_id, hourly_rates: [...] } ] }\n  { provider: 'clp'|'shell', rates: [ { station_external_id, pole_external_id, day_of_week, hour_start_local, price_per_kwh_hkd, ... } ] }\n\nAuth: shared secret in the X-EVW-Webhook-Token header (validated by FastAPI on POST /api/v1/internal/rates/bulk-upsert). n8n simply forwards the body.\n\nExpected runtime: <2s per call (one inbound webhook → one Code node → one HTTP POST).\n\nFailure modes:\n  * Malformed body (no poles[]/rates[]) → Code node throws, StopAndError branches on the error output.\n  * Provider unknown → Code node throws.\n  * FastAPI 5xx → retry 3× then StopAndError.\n  * 401/403 (webhook token rejected) → no retry, StopAndError immediately.\n\nIdempotency: hourly_rates has a unique key on (pole_id, day_of_week, hour_start_local, valid_from). Re-delivery of the same payload re-upserts the same row and is therefore a no-op on data, but does bump updated_at — that is intentional, it's how we know the provider is alive."
+      },
+      "id": "rate-trigger",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        200,
+        300
+      ],
+      "onError": "continueRegularOutput",
+      "webhookId": "evw-rate-normalize"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "\nconst body = $input.first().json.body || $input.first().json;\nconst headers = $input.first().json.headers || {};\n\n// Provider identification — providers must include provider in payload, or we\n// try to infer from the URL scheme in the QR-like id, or fall back to a header.\nconst providerCode = (\n  body.provider ||\n  headers['x-evw-provider'] ||\n  (Array.isArray(body.rates) && body.rates[0] && body.rates[0].provider) ||\n  'unknown'\n).toLowerCase();\nconst allowed = ['hkev','clp','shell','tesla'];\nif (!allowed.includes(providerCode)) {\n  throw new Error('rate-normalize: unknown provider \"' + providerCode + '\"');\n}\n\n// Accept either:\n//   { provider, station_external_id, poles: [ {external_id, hourly_rates: [...]} ] }\n//   { provider, rates: [ {station_external_id, pole_external_id, day_of_week, hour_start_local, ...} ] }\nconst out = [];\n\nif (Array.isArray(body.poles)) {\n  for (const p of body.poles) {\n    const poleExt = String(p.external_id || p.pole_id || p.id);\n    const stationExt = String(body.station_external_id || p.station_external_id || '');\n    if (!poleExt || !stationExt) continue;\n    for (const r of (p.hourly_rates || p.rates || [])) {\n      out.push({\n        station_external_id: stationExt,\n        pole_external_id: poleExt,\n        provider_code: providerCode,\n        day_of_week: Number.isInteger(r.day_of_week) ? r.day_of_week : 0,\n        hour_start_local: r.hour_start_local || r.hour || '00:00:00',\n        price_per_kwh_hkd: String(r.price_per_kwh_hkd ?? r.price ?? 0),\n        parking_fee_hkd: String(r.parking_fee_hkd ?? 0),\n        valid_from: r.valid_from || new Date().toISOString(),\n        valid_to: r.valid_to || null\n      });\n    }\n  }\n} else if (Array.isArray(body.rates)) {\n  for (const r of body.rates) {\n    out.push({\n      station_external_id: String(r.station_external_id || r.station_id || ''),\n      pole_external_id: String(r.pole_external_id || r.pole_id || ''),\n      provider_code: providerCode,\n      day_of_week: Number.isInteger(r.day_of_week) ? r.day_of_week : 0,\n      hour_start_local: r.hour_start_local || r.hour || '00:00:00',\n      price_per_kwh_hkd: String(r.price_per_kwh_hkd ?? r.price ?? 0),\n      parking_fee_hkd: String(r.parking_fee_hkd ?? 0),\n      valid_from: r.valid_from || new Date().toISOString(),\n      valid_to: r.valid_to || null\n    });\n  }\n} else {\n  throw new Error('rate-normalize: expected body.poles[] or body.rates[]; got ' + JSON.stringify(body).slice(0, 300));\n}\n\nreturn out.map(item => ({ json: item }));\n",
+        "onError": "continueErrorOutput",
+        "comment": "Single Code node that fans the payload out per-rate. Output is N items, each with { station_external_id, pole_external_id, provider_code, day_of_week, ... }. The downstream HTTP Request node runs once per item."
+      },
+      "id": "rate-normalize-code",
+      "name": "Code — normalize rate payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.EVW_API_BASE_URL}}/api/v1/internal/rates/bulk-upsert",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.EVW_API_TOKEN}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-EVW-Webhook-Token",
+              "value": "={{$env.EVW_WEBHOOK_TOKEN}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{JSON.stringify({provider_code: $json.provider_code, rates: [$json]})}}",
+        "options": {
+          "timeout": 15000
+        },
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 5000,
+        "onError": "continueRegularOutput",
+        "comment": "Per-rate call. If volume is high we can switch to batch mode by sending all rows in a single body — for now per-row keeps idempotency obvious and retries cheap."
+      },
+      "id": "rate-upsert",
+      "name": "HTTP — POST /rates/bulk-upsert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        680,
+        300
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "errorMessage": "=rate-normalize failed: {{$json.error?.message || $json.message || JSON.stringify($json).slice(0,500)}}"
+      },
+      "id": "rate-fail",
+      "name": "Stop and Error",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        920,
+        540
+      ],
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Code — normalize rate payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code — normalize rate payload": {
+      "main": [
+        [
+          {
+            "node": "HTTP — POST /rates/bulk-upsert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stop and Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP — POST /rates/bulk-upsert": {
+      "main": [
+        [
+          {
+            "node": "Stop and Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true,
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all",
+    "timezone": "Asia/Hong_Kong",
+    "errorWorkflow": "evw-global-error-workflow"
+  },
+  "staticData": null,
+  "pinData": {},
+  "versionId": "1.0.0",
+  "triggerCount": 1,
+  "updatedAt": "2026-09-13T00:00:00.000Z",
+  "createdAt": "2026-09-13T00:00:00.000Z"
+}

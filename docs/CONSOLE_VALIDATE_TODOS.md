@@ -82,7 +82,15 @@ Both 322 lines, byte-equal. The mobile+web TS contract holds.
 - [x] SQLite in-memory via `aiosqlite` for portability (no Docker required for tests)
 - [ ] Real Postgres validation — set `EVW_TEST_DATABASE_URL=postgresql+asyncpg://...` and re-run; required before shipping
 
-## Counts
+## From Agent C (provisioning + bilingual docs) — NEW
+
+These TODOs are unblocked by the operator completing the corresponding step in [`PROVISIONING.md`](PROVISIONING.md).
+
+- [ ] **Apple Pay merchant .cer / .p8** — upload via Settings after operator finishes Step E of `PROVISIONING.md`. Currently `EVW_APPLE_PAY_MERCHANT_CERT_PATH` / `EVW_APPLE_PAY_MERCHANT_KEY_PATH` are unset; FastAPI will accept the env vars but the `apple_google.py` structural validator only runs in stub mode without them.
+- [ ] **Google service account JSON** — upload via Settings after operator finishes Step F. `EVW_GOOGLE_SA_KEY_PATH` currently unset; Google Pay path is gated.
+- [ ] **Stripe live keys + webhook signing secret** — paste `sk_live_***`, `pk_live_***`, and `whsec_***` into `.env` after operator finishes Step G. `topup_stripe` currently runs in stub mode when `EVW_STRIPE_SECRET_KEY` is empty (see Agent B's pre-ship TODO).
+- [ ] **OCPP bridge** — defer until HK provider chosen + charger hardware available. Not in scope for first release; `Disable synthetic telemetry loop in production` (Agent C TODO) remains blocked on this.
+- [ ] **Bilingual docs: remaining pages** — translate `CONSOLE_VALIDATE_TODOS.md` and any future `docs/*.md`. See [`docs/en/INDEX.md`](en/INDEX.md) for the canonical pending-translations list. Current translated set: README, ARCHITECTURE, BACKUP, PROVISIONING.
 
 ## From Agent C (charging WS + stations) — DONE
 

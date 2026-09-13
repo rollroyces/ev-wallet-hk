@@ -59,3 +59,27 @@ $ diff mobile/lib/types.ts web/lib/types.ts
 ```
 
 Both 322 lines, byte-equal. The mobile+web TS contract holds.
+
+## From Agent A (backend core) — DONE
+
+### Pre-ship TODOs
+
+- [ ] `/api/v1/auth/login` — full bcrypt password verify + lockout (currently returns `AUTH_LOGIN_NOT_IMPLEMENTED`)
+- [ ] Production Apple JWKS — currently instantiate `PyJWKClient` lazily; pin URL + cache TTL
+- [ ] `/readyz` probe Postgres write capability (currently `SELECT 1` only)
+- [ ] Metrics labels for `idp_error_total` — add `domain` label
+
+### Integration gaps from parallel fan-out — MUST FIX in console/validate
+
+- [ ] **14 test failures in Agent B/C scope** — root cause: `AsyncSession` leaking into FastAPI `response_model`. Symptom: `FastAPIError: Invalid args for response field! ... AsyncSession is a valid Pydantic field type`. Fix: find the route handlers returning `AsyncSession` (likely in `src/evwallet/wallet/router.py` and/or `src/evwallet/charging/router.py`) and add `response_model=None` OR return a Pydantic DTO.
+- [ ] Verify Agent B's `wallet/router.py` endpoints use canonical error envelope
+- [ ] Verify Agent C's `charging/router.py` endpoints validate JWT properly
+- [ ] Confirm `Settings.async_database_url` is used everywhere (some siblings may have hardcoded URLs)
+- [ ] Shared `tests/conftest.py` was rewritten by Agent C mid-run; confirm both Agent A fixtures and Agent B/C fixtures coexist
+
+### DB fixture strategy
+
+- [x] SQLite in-memory via `aiosqlite` for portability (no Docker required for tests)
+- [ ] Real Postgres validation — set `EVW_TEST_DATABASE_URL=postgresql+asyncpg://...` and re-run; required before shipping
+
+## Counts

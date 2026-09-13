@@ -32,3 +32,30 @@ final integration phase.
 - [ ] APNs key + FCM `google-services.json` — wire through `expo-notifications` plugin before shipping
 - [ ] `mobile/app/(auth)/login.tsx` — auth UX is out of scope for this PR; AuthProvider ready, screens pending
 - [ ] `web/lib/types.ts` MUST mirror `mobile/lib/types.ts` byte-for-byte (Agent E) — validate with `diff`
+
+## From Agent E (web portal) — DONE
+
+### Contract deviations (web also added 2 methods beyond ARCHITECTURE.md)
+
+- [ ] `getSession(id)` — same as Agent D; verify Agent A endpoint exists
+- [ ] `getSessions(limit?)` — GET `/api/v1/charging/sessions?limit=N`; Agent A must add this list endpoint
+
+### Pre-ship TODOs
+
+- [ ] `web/app/login/login-form.tsx` Apple/Google buttons POST placeholder ID tokens — wire up real OAuth flows once client IDs are provisioned
+- [ ] Live telemetry WS on web — browsers can't carry HttpOnly cookies on cross-origin WS; add Next.js rewrite OR one-shot signed WS token via server action
+- [ ] Top-up form UI — `POST /api/v1/wallet/topup` is wired in ApiClient; build the UI when Stripe/Apple Pay/Google Pay integrations land
+- [ ] Add `/install` or App Store badge (mobile install link from web)
+- [ ] Wire real geolocation for `/stations` (currently passes 0,0)
+- [ ] Confirm Agent A always returns `Set-Cookie` from `/auth/login`; remove fallback that writes cookie from JSON body in `web/app/login/actions.tsx`
+- [ ] Set `EVW_JWT_SECRET` in production env (middleware currently has a dev-only fallback)
+- [ ] Internal admin endpoints Agent A must add: `GET /api/v1/internal/stations/list`, `GET /api/v1/wallet/admin/all-transactions`
+
+## Type parity ✅ (validated)
+
+```
+$ diff mobile/lib/types.ts web/lib/types.ts
+(identical)
+```
+
+Both 322 lines, byte-equal. The mobile+web TS contract holds.

@@ -1,0 +1,40 @@
+# =============================================================================
+# Auto-shutdown the Mac on UPS low battery.
+# Requires apcupsd (free):  brew install apcupsd
+# After install:            sudo cp /opt/homebrew/etc/apcupsd/apcupsd.conf.default \
+#                                  /opt/homebrew/etc/apcupsd/apcupsd.conf
+# Edit UPSCABLE, UPSTYPE, DEVICE for your APC model (USB on Mac mini = usb).
+# Start:                    brew services start apcupsd
+#
+# This plist watches the UPS status file and triggers shutdown when battery
+# is critical. Adjust BATTERY_THRESHOLD_SECONDS below based on your UPS model
+# (APC BE600M2 = ~3 min runtime at full load; shutdown when <60s remaining).
+# =============================================================================
+
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.apc.shutdown</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>/Users/hermes/projects/ev-wallet-hk/scripts/ups-monitor.sh</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>30</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/com.apc.shutdown.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/com.apc.shutdown.err</string>
+</dict>
+</plist>

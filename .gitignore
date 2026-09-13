@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Node / Expo
+node_modules/
+.expo/
+.expo-shared/
+dist/
+web-build/
+*.log
+npm-debug.log*
+
+# Next.js
+.next/
+out/
+.turbo/
+
+# Postgres / Redis / n8n data (NEVER commit)
+data/
+pgdata/
+redisdata/
+n8ndata/
+backups/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Docker
+.docker/
+docker-compose.override.yml
+
+# Secrets / keys
+*.pem
+*.key
+*.crt
+*.p12
+cloudflared/*.json
+.env.cloudflared
+
+# Local dev artifacts
+*.local.yml
+*.local.yaml

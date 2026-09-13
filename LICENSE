@@ -1,0 +1,13 @@
+# License
+
+EV Wallet HK is dual-licensed:
+
+1. **AGPL-3.0-or-later** (`LICENSE-AGPL`) — open-source. Free for use, modification, and distribution under AGPL terms. Modifications served over a network MUST publish their source.
+
+2. **Commercial** — for proprietary/SaaS embedding without AGPL copyleft. Contact for terms.
+
+This is the same model used by MariaDB, Sentry, and MinIO.
+
+```
+SPDX-License-Identifier: AGPL-3.0-or-later
+```

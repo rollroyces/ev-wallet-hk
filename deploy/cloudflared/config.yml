@@ -1,0 +1,37 @@
+# =============================================================================
+# Cloudflare Tunnel routing config
+# This file is REFERENCED by `cloudflared tunnel route` but the tunnel runs
+# inside the Docker container via TUNNEL_TOKEN env var, so this file is mostly
+# documentation / for `cloudflared tunnel ingress validate`.
+#
+# The actual ingress lives in Cloudflare's edge config (set by:
+#   cloudflared tunnel route dns <tunnel> api.evwallet.com.hk
+# or via the Cloudflare dashboard).
+# =============================================================================
+
+tunnel: <TUNNEL_ID_FROM_CLOUDFLARE>
+credentials-file: /etc/cloudflared/credentials.json
+
+# Inbound routing — everything is HTTP, comes from Cloudflare edge
+ingress:
+  - hostname: api.evwallet.com.hk
+    service: https://caddy:443
+    originRequest:
+      noTLSVerify: true               # Caddy uses self-signed for loopback
+      connectTimeout: 10s
+      tlsTimeout: 10s
+      keepAliveConnections: 16
+      keepAliveTimeout: 90s
+      httpHostHeader: api.evwallet.com.hk
+
+  - hostname: n8n.evwallet.com.hk
+    service: https://caddy:443
+    originRequest:
+      noTLSVerify: true
+      httpHostHeader: n8n.evwallet.com.hk
+
+  # Health/metrics endpoint to satisfy Cloudflare's tunnel health check
+  - service: http_status:200
+
+  # Catch-all — REQUIRED per cloudflared docs, must be last
+  - service: http_status:404

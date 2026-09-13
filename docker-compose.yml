@@ -1,0 +1,231 @@
+# =============================================================================
+# EV Wallet HK — local-first production stack
+# Single Mac mini, all services in compose, Cloudflare Tunnel as the only
+# public ingress. Compose is BOTH the dev and the production target.
+#
+# IMPORTANT: this is a deployable, not a dev convenience. Every service below
+# is required for the wallet to be functional. Removing one breaks the system.
+# =============================================================================
+
+name: ev-wallet
+
+services:
+
+  # ---- Data layer ------------------------------------------------------------
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: evw-postgres
+    restart: unless-stopped
+    # Loopback only — Caddy reaches it through the Docker network
+    ports:
+      - "127.0.0.1:5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER must be set}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB must be set}
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --encoding=UTF-8"
+      # Ledger integrity — these are the load-bearing Postgres settings
+      # DO NOT CHANGE without reading docs/LEDGER_INTEGRITY.md (TODO)
+      POSTGRES_SHARED_BUFFERS: 256MB
+      POSTGRES_WAL_LEVEL: replica
+      POSTGRES_SYNCHRONOUS_COMMIT: "on"   # durability over throughput
+      POSTGRES_FULL_PAGE_WRITES: "on"
+      POSTGRES_FSYNC: "on"
+      POSTGRES_TIMEZONE: Asia/Hong_Kong
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./deploy/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+    networks: [internal]
+
+  redis:
+    image: redis:7-alpine
+    container_name: evw-redis
+    restart: unless-stopped
+    command:
+      - "redis-server"
+      - "--requirepass"
+      - "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}"
+      - "--appendonly"
+      - "yes"              # AOF — durability over raw speed
+      - "--appendfsync"
+      - "everysec"
+      - "--maxmemory"
+      - "256mb"
+      - "--maxmemory-policy"
+      - "allkeys-lru"
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "--no-auth-warning", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+    networks: [internal]
+
+  # ---- Application layer -----------------------------------------------------
+
+  fastapi:
+    build:
+      context: ./deploy/fastapi
+      dockerfile: Dockerfile
+    image: evwallet/fastapi:local
+    container_name: evw-fastapi
+    restart: unless-stopped
+    # Caddy reaches FastAPI through Docker network — NOT exposed to host
+    expose: ["8000"]
+    environment:
+      EVW_ENV: ${EVW_ENV}
+      EVW_LOG_LEVEL: ${EVW_LOG_LEVEL}
+      EVW_LOG_FORMAT: ${EVW_LOG_FORMAT}
+      EVW_JWT_SECRET: ${EVW_JWT_SECRET:?EVW_JWT_SECRET must be set}
+      EVW_JWT_EXPIRY_HOURS: ${EVW_JWT_EXPIRY_HOURS}
+      EVW_TRUSTED_PROXIES: ${EVW_TRUSTED_PROXIES}
+      EVW_PREAUTH_MAX_HKD: ${EVW_PREAUTH_MAX_HKD}
+      EVW_STRIPE_SECRET_KEY: ${EVW_STRIPE_SECRET_KEY}
+      EVW_STRIPE_WEBHOOK_SECRET: ${EVW_STRIPE_WEBHOOK_SECRET}
+      EVW_APPLE_PAY_MERCHANT_ID: ${EVW_APPLE_PAY_MERCHANT_ID}
+      EVW_GOOGLE_PAY_MERCHANT_ID: ${EVW_GOOGLE_PAY_MERCHANT_ID}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      REDIS_HOST: redis
+      REDIS_PORT: ${REDIS_PORT}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    # Critical: tini + graceful shutdown so SIGTERM drains WebSockets
+    init: true
+    stop_grace_period: 30s
+    stop_signal: SIGTERM
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+    networks: [internal]
+
+  n8n:
+    image: n8nio/n8n:1.94.1
+    container_name: evw-n8n
+    restart: unless-stopped
+    # n8n behind Caddy — NOT exposed to host
+    expose: ["5678"]
+    environment:
+      N8N_HOST: ${N8N_HOST}
+      N8N_PORT: ${N8N_PORT}
+      N8N_PROTOCOL: https
+      WEBHOOK_URL: https://${N8N_HOST}/
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER: ${N8N_USER}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_PASSWORD:?N8N_PASSWORD must be set}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?N8N_ENCRYPTION_KEY must be set}
+      GENERIC_TIMEZONE: Asia/Hong_Kong
+      TZ: Asia/Hong_Kong
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: ${POSTGRES_PORT}
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+      EXECUTIONS_DATA_PRUNE: "true"
+      EXECUTIONS_DATA_MAX_AGE: 168   # 7 days
+      N8N_METRICS: "true"
+    volumes:
+      - n8ndata:/home/node/.n8n
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+    networks: [internal]
+
+  # ---- Edge layer ------------------------------------------------------------
+
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: evw-caddy
+    restart: unless-stopped
+    # Loopback only — Cloudflare Tunnel proxies to here
+    ports:
+      - "127.0.0.1:443:443"
+      - "127.0.0.1:80:80"        # for ACME HTTP-01 if ever used without tunnel
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:2019/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      fastapi:
+        condition: service_started
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+    networks: [internal, edge]
+
+  cloudflared:
+    image: cloudflare/cloudflared:2024.11.1
+    container_name: evw-cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARED_TUNNEL_TOKEN:?CLOUDFLARED_TUNNEL_TOKEN must be set}
+      # cloudflared picks up TUNNEL_TOKEN from env
+    healthcheck:
+      test: ["CMD", "cloudflared", "--no-autoupdate", "tunnel", "info"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      caddy:
+        condition: service_started
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+    networks: [edge]
+
+volumes:
+  pgdata:
+    name: evw-pgdata
+  redisdata:
+    name: evw-redisdata
+  n8ndata:
+    name: evw-n8ndata
+  caddy_data:
+  caddy_config:
+
+networks:
+  internal:
+    driver: bridge
+    internal: false     # need internet for outbound (provider polls, telemetry)
+  edge:
+    driver: bridge

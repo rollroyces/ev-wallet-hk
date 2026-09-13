@@ -1,0 +1,32 @@
+# Minimal requirements file — actual deps added when FastAPI code lands.
+# Keeping one entry means the build doesn't fail before the code is written.
+#
+# Core (added in next turn):
+#   fastapi>=0.115
+#   uvicorn[standard]>=0.32
+#   pydantic>=2.9
+#   pydantic-settings>=2.6
+#   sqlalchemy[asyncio]>=2.0.36
+#   asyncpg>=0.30
+#   alembic>=1.14
+#   redis>=5.2
+#   python-jose[cryptography]>=3.3
+#   passlib[bcrypt]>=1.7
+#   httpx>=0.28
+#   stripe>=11.4
+#
+# This is the production-only set; dev tooling (pytest, ruff, mypy) lives in
+# requirements-dev.txt when added.
+
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+pydantic==2.10.2
+pydantic-settings==2.6.1
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+alembic==1.14.0
+redis==5.2.0
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+httpx==0.28.1
+stripe==11.4.1

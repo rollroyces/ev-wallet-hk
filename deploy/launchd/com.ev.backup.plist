@@ -1,0 +1,46 @@
+# =============================================================================
+# Daily backup job — runs at 03:00 Asia/Hong_Kong
+# Sequence:
+#   1. pg_basebackup -> local staging dir (consistent PITR snapshot)
+#   2. rclone copy -> B2 bucket (encrypted at rest)
+#   3. Redis BGSAVE  -> snapshot to local
+#   4. rclone copy -> B2 bucket
+#   5. Apply retention (daily/weekly/monthly)
+#
+# Install:
+#   cp deploy/launchd/com.ev.backup.plist ~/Library/LaunchAgents/
+#   launchctl load ~/Library/LaunchAgents/com.ev.backup.plist
+# =============================================================================
+
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.ev.backup</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>/Users/hermes/projects/ev-wallet-hk/scripts/backup.sh</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/hermes/projects/ev-wallet-hk/logs/backup.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/hermes/projects/ev-wallet-hk/logs/backup.err</string>
+</dict>
+</plist>

@@ -1,0 +1,81 @@
+# =============================================================================
+# EV Wallet HK — Caddy reverse proxy
+# Listens ONLY on 127.0.0.1 — only Cloudflare Tunnel reaches it.
+# Cloudflare terminates TLS and forwards via HTTP (noTLSVerify on tunnel side).
+#
+# Caddy uses Cloudflare's origin-pull CA so it trusts connections from the edge.
+# Get CA from: https://developers.cloudflare.com/ssl/origin-configuration/origin-ca/
+# Place it at /data/caddy/origin_ca.crt and reference in tls directive.
+# =============================================================================
+
+{
+    # Global options
+    admin localhost:2019
+    auto_https off           # Caddy is behind Cloudflare — no need for cert issuance here
+    log {
+        output file /data/caddy/access.log {
+            roll_size 10mb
+            roll_keep 5
+        }
+    }
+}
+
+# ---- FastAPI ----------------------------------------------------------------
+https://api.evwallet.com.hk {
+    bind 127.0.0.1
+    tls internal            # Caddy uses its self-signed cert for loopback;
+                            # cloudflared sets noTLSVerify=true
+
+    encode zstd gzip
+
+    @websocket {
+        header Connection *Upgrade*
+        header Upgrade    websocket
+    }
+
+    reverse_proxy @websocket fastapi:8000 {
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto https
+        header_up X-Forwarded-Host {host}
+        transport http {
+            versions h1.1
+        }
+    }
+
+    reverse_proxy fastapi:8000 {
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto https
+        header_up X-Forwarded-Host {host}
+        # Long timeouts for charging-session WebSocket
+        timeout 600s
+    }
+
+    # Rate limiting at edge — Caddy layer (cheaper than FastAPI for floods)
+    rate_limit {
+        zone api_zone {
+            key    {remote_host}
+            events 1000
+            window 60s
+        }
+    }
+}
+
+# ---- n8n --------------------------------------------------------------------
+https://n8n.evwallet.com.hk {
+    bind 127.0.0.1
+    tls internal
+    encode gzip
+
+    reverse_proxy n8n:5678 {
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto https
+        header_up X-Forwarded-Host {host}
+    }
+}
+
+# ---- Health probe (loopback) -------------------------------------------------
+http://127.0.0.1 {
+    bind 127.0.0.1
+    respond /healthz 200
+    respond /readyz  200
+}

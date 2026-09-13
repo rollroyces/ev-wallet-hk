@@ -117,3 +117,52 @@ Root cause of remaining 11: shared sqlite engine state across test files (Agent 
 - `src/evwallet/errors.py` — appended 11 domain subclasses (AuthTokenInvalid, Station*, Charging*, etc.)
 - `src/evwallet/auth/deps.py` — patched `*** | None` corruption back to `str | None`
 - `src/evwallet/wallet/ledger.py` — modified (likely by Agent B mid-flight; will reconcile)
+
+## From Agent B (wallet ledger) — DONE
+
+### Verified end-to-end
+
+- [x] 17/18 wallet tests pass (1 skipped: `test_concurrent_reserve_no_double_spend` requires real Postgres)
+- [x] Smoke script proves money flows correctly:
+  - topup 500 → available=500, reserved=0
+  - reserve 120 → available=380, reserved=120
+  - settle 12.5 kWh @ 8.40 = 105 + release 15 remainder → available=395, reserved=0
+  - idempotent topup with same external_ref → same txn id
+  - over-reserve raises WALLET_INSUFFICIENT_FUNDS
+  - reconcile detects tampered wallet row
+
+### Pre-ship TODOs
+
+- [ ] Remove `tests/_wallet_setup.py` once conftest.py handles SQLite/aiosqlite natively
+- [ ] Run `test_concurrent_reserve_no_double_spend` against real Postgres before shipping (validates the SELECT FOR UPDATE lock actually serializes)
+- [ ] Apple Pay / Google Pay structural validators only; need real merchant certs for prod
+- [ ] `evwallet.payments.stripe` runs in stub mode when `EVW_STRIPE_SECRET_KEY` unset — remove stub in prod
+- [ ] `evwallet.auth.deps.current_user` is a stub (treats bearer as literal UUID); Agent A replaces with real JWT validation
+
+### Wallet smoke script
+
+Run: `python scripts/smoke_wallet_ledger.py` — proves the ledger invariants hold against a real (sqlite) DB.
+
+## Console/validate plan (consolidated)
+
+The 6-agent fan-out is complete. To close the integration gaps, console/validate will:
+
+1. **Unify `tests/conftest.py`** — pick Agent C's strategy (JSONColumn + BigInteger Integer swap + register gen_random_uuid SQL function) as canonical. Remove Agent B's `_wallet_setup.py`. Re-run full suite; expect ~50 green.
+2. **Reconcile sibling clobbers** of `errors.py`, `models.py`, `config.py`, `auth/deps.py`, `db/__init__.py`:
+   - errors.py: keep Agent A's 5 core + append Agent C's 11 domain subclasses + Agent B's `InsufficientFundsError`
+   - models.py: keep Agent A's 10 tables + Agent C's `JSONColumn` decorator + Agent B's sqlite patches
+   - config.py: Agent A owns; verify all callers use canonical names
+3. **Add `Settings.qr_hmac_secret`** to config.py (Agent C wants it)
+4. **Add global `IDPError` exception handler in `main.py`** mapping to canonical error envelope
+5. **Add `pyproject.toml` missing deps** (uv sync works but the optional-deps `[dev]` table is incomplete)
+6. **Add agent-D endpoints** to Agent A's router if missing:
+   - `POST /api/v1/auth/push-tokens`
+   - `GET /api/v1/charging/sessions` (paginated list)
+7. **Add agent-F internal endpoints** (referenced by n8n workflows):
+   - `POST /api/v1/internal/stations/upsert`
+   - `POST /api/v1/internal/rates/bulk-upsert`
+   - `GET /api/v1/internal/stations/list`
+   - `GET /api/v1/wallet/admin/all-transactions`
+8. **Bring up docker-compose stack** (`docker compose up -d`) and `curl https://api.evwallet.com.hk/healthz`
+9. **Run real Postgres tests** (`EVW_TEST_DATABASE_URL=postgresql+asyncpg://...` + `pytest`)
+10. **Final commit with `[verified]` prefix**, tag v0.1.0

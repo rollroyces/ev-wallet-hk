@@ -24,7 +24,12 @@ from evwallet.errors import (
     WalletError,
 )
 from evwallet.logging import get_logger
-from evwallet.wallet.ledger import BUCKET_AVAILABLE, BUCKET_EXTERNAL, BUCKET_RESERVED, post_transaction
+from evwallet.wallet.ledger import (
+    BUCKET_AVAILABLE,
+    BUCKET_EXTERNAL,
+    BUCKET_RESERVED,
+    post_transaction,
+)
 
 _log = get_logger(__name__)
 

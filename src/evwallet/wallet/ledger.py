@@ -16,8 +16,10 @@ All amounts are ``Decimal(12, 4)``. Floats are banned in this module.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import Iterable, Sequence
+from datetime import UTC
 from decimal import Decimal
 from typing import Any
 
@@ -25,7 +27,6 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from evwallet.config import get_settings
 from evwallet.db.models import LedgerEntry, Wallet, WalletTransaction
 from evwallet.errors import (
     InsufficientFundsError,
@@ -38,6 +39,27 @@ _log = get_logger(__name__)
 
 # Sentinel so callers don't need to import Decimal just to pass 0.
 ZERO = Decimal("0")
+
+
+# Per-wallet asyncio lock registry. On Postgres ``SELECT ... FOR UPDATE``
+# handles concurrency; on SQLite (used in tests + some local installs) the
+# FOR UPDATE clause is a no-op, so we serialize at the application layer.
+# The dict is keyed by wallet_id; each value is an asyncio.Lock. Locks are
+# kept forever (process-lifetime) — wallets are few, churn is low, and
+# garbage-collecting the dict requires GC cooperation we don't want to
+# depend on under load.
+_wallet_locks: dict[uuid.UUID, asyncio.Lock] = {}
+_locks_guard = asyncio.Lock()
+
+
+async def _lock_for(wallet_id: uuid.UUID) -> asyncio.Lock:
+    """Get-or-create the per-wallet asyncio lock."""
+    async with _locks_guard:
+        lk = _wallet_locks.get(wallet_id)
+        if lk is None:
+            lk = asyncio.Lock()
+            _wallet_locks[wallet_id] = lk
+        return lk
 
 
 # Bucket names — single source of truth.
@@ -84,7 +106,7 @@ def _validate_entries(entries: Sequence[tuple[str, str, Decimal]]) -> None:
             "transaction must have at least one entry",
             details={"entry_count": 0},
         )
-    for idx, (entry_type, bucket, amount) in enumerate(entries):
+    for idx, (entry_type, bucket, _amount) in enumerate(entries):
         if entry_type not in VALID_ENTRY_TYPES:
             raise WalletLedgerIntegrityError(
                 f"unknown entry_type: {entry_type!r}",
@@ -210,6 +232,27 @@ async def post_transaction(
         if existing is not None:
             return existing
 
+    # Per-wallet serialization. On Postgres the FOR UPDATE clause below is
+    # the load-bearing lock; on SQLite it is a no-op and this asyncio.Lock
+    # is what makes concurrent reserves safe in tests + local installs.
+    wallet_lock = await _lock_for(wallet_id)
+    async with wallet_lock:
+        return await _post_transaction_locked(
+            db, wallet_id, kind, norm_entries, external_ref=external_ref,
+            metadata=metadata,
+        )
+
+
+async def _post_transaction_locked(
+    db: AsyncSession,
+    wallet_id: uuid.UUID,
+    kind: str,
+    norm_entries: list[tuple[str, str, Decimal]],
+    *,
+    external_ref: str | None,
+    metadata: dict[str, Any] | None,
+) -> WalletTransaction:
+    """Inner body of ``post_transaction`` — assumes the per-wallet lock is held."""
     # Lock the wallet row for the rest of the transaction.
     wallet = await _lock_wallet(db, wallet_id)
 
@@ -330,9 +373,9 @@ async def post_transaction(
 
 
 def _utcnow():  # local; same shape as db.models._utcnow
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 async def _journal_sum_for_txn(

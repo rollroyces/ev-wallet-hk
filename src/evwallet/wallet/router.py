@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from decimal import Decimal
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,15 +16,11 @@ from evwallet.auth.deps import current_user
 from evwallet.db.models import User, Wallet, WalletTransaction
 from evwallet.db.session import get_db
 from evwallet.errors import (
-    IDPError,
-    InsufficientFundsError,
     ValidationError,
     WalletNotFoundError,
 )
 from evwallet.logging import get_logger
-from evwallet.wallet import ledger
 from evwallet.wallet import topup as wallet_topup
-from evwallet.payments import apple_google
 
 _log = get_logger(__name__)
 
@@ -42,7 +38,7 @@ class WalletSummary(BaseModel):
     available_hkd: Decimal
     reserved_hkd: Decimal
     currency: str
-    recent_transactions: list["TransactionOut"]
+    recent_transactions: list[TransactionOut]
 
 
 class BalanceOut(BaseModel):

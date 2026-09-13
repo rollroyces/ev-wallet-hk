@@ -12,17 +12,16 @@ Routes are mounted under ``/api/v1/stations``.
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from zoneinfo import ZoneInfo
 
-from ..db.models import ChargingStation, HourlyRate, Pole
+from ..db.models import ChargingStation, Pole
 from ..db.session import get_db
 from ..errors import StationNotFound
 from ..logging import get_logger
@@ -210,7 +209,7 @@ def build_router() -> APIRouter:
                     db, pole_id=poles[0].id, date_local=local_today
                 )
                 next_24h = [_rate_to_out(r) for r in rows]
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 _log.warning(
                     "stations.get.next_24h_failed station=%s pole=%s err=%s",
                     station_id,

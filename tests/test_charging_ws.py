@@ -13,16 +13,14 @@ and a direct ``TestClient``-style WebSocket call for the WS endpoint.
 from __future__ import annotations
 
 import asyncio
-import json
 import uuid
 from decimal import Decimal
 
 import pytest
 
 from evwallet.charging.qr import compute_signature, parse_qr, verify_qr_payload
-from evwallet.errors import ChargingInvalidQR
+from evwallet.errors import AuthTokenInvalid, ChargingInvalidQR
 from evwallet.wallet import reservation as reservation_module
-
 
 # ---------------------------------------------------------------------------
 # Reservation call tracking — wraps agent B's functions so tests can assert.
@@ -33,28 +31,43 @@ from evwallet.wallet import reservation as reservation_module
 def _track_reservation_calls(monkeypatch):
     """Patch each reservation function to record its kwargs into a list."""
     calls: list[dict] = []
-    original_funcs: dict = {}
 
-    async def _record(name, original, *args, **kwargs):
-        # Strip the AsyncSession — it's not serializable / not interesting.
-        cleaned_kwargs = {
-            k: str(v) if hasattr(v, "hex") else v for k, v in kwargs.items()
-        }
-        cleaned_kwargs["op"] = name
-        calls.append(cleaned_kwargs)
-        return await original(*args, **kwargs)
+    def _make_wrapper(name, original):  # type: ignore[no-untyped-def]
+        async def _wrapped(*args, **kwargs):
+            cleaned_kwargs = {
+                k: (str(v) if hasattr(v, "hex") else v) for k, v in kwargs.items()
+            }
+            cleaned_kwargs["op"] = name
+            calls.append(cleaned_kwargs)
+            return await original(*args, **kwargs)
+
+        _wrapped.__patched__ = True  # type: ignore[attr-defined]
+        return _wrapped
 
     for name in ("reserve", "settle", "release", "end_session_settle"):
         if hasattr(reservation_module, name):
-            original_funcs[name] = getattr(reservation_module, name)
-
-            async def _wrapped(*args, __name=name, __original=None, **kwargs):
-                return await _record(__name, __original, *args, **kwargs)
-
-            _wrapped.__original__ = original_funcs[name]  # type: ignore[attr-defined]
+            original = getattr(reservation_module, name)
             monkeypatch.setattr(
-                reservation_module, name, _wrapped, raising=True
+                reservation_module, name, _make_wrapper(name, original), raising=True
             )
+
+    # Also patch the names re-imported in the charging modules.
+    for mod_name in (
+        "evwallet.charging.router",
+        "evwallet.charging.ws",
+    ):
+        try:
+            mod = __import__(mod_name, fromlist=["reserve"])
+        except Exception:
+            continue
+        for name in ("reserve", "settle", "release", "end_session_settle"):
+            if hasattr(mod, name):
+                original = getattr(mod, name)
+                if getattr(original, "__patched__", False):
+                    continue
+                monkeypatch.setattr(
+                    mod, name, _make_wrapper(name, original), raising=True
+                )
 
     yield calls
 
@@ -184,6 +197,35 @@ async def test_end_session_settles_and_releases(
     assert start_resp.status_code == 201, start_resp.text
     session_id = start_resp.json()["session_id"]
 
+    # Simulate one telemetry frame so the session has nonzero kwh — otherwise
+    # end_session_settle would be a no-op (release-only path).
+    from sqlalchemy import select
+
+    from evwallet.db.models import ChargingSession, SessionTelemetry
+    from evwallet.db.session import get_sessionmaker
+
+    sm = get_sessionmaker()
+    async with sm() as session:
+        sess = (
+            await session.execute(
+                select(ChargingSession).where(ChargingSession.id == uuid.UUID(session_id))
+            )
+        ).scalar_one()
+        sess.kwh_delivered = Decimal("1.234")
+        sess.running_cost_hkd = Decimal("11.32")
+        # Append a telemetry row so end_session_settle sees a final reading.
+        session.add(
+            SessionTelemetry(
+                session_id=uuid.UUID(session_id),
+                kwh_cumulative=Decimal("1.234"),
+                kw_instant=Decimal("47.5"),
+                soc_pct=42,
+                cost_hkd_cumulative=Decimal("11.32"),
+                raw={"source": "test"},
+            )
+        )
+        await session.commit()
+
     end_resp = await app_client.post(
         f"/api/v1/charging/sessions/{session_id}/end",
         headers={"Authorization": f"Bearer {token}"},
@@ -207,9 +249,7 @@ async def test_end_session_settles_and_releases(
 @pytest.mark.asyncio
 async def test_ws_connection_requires_jwt(user_factory, station_factory):
     """WS without a token is rejected by the auth layer."""
-    from fastapi import FastAPI
 
-    from evwallet.charging.router import build_router as build_charging
     from evwallet.charging.ws import _authenticate_ws
 
     # Calling _authenticate_ws with no token must raise.
@@ -221,7 +261,7 @@ async def test_ws_connection_requires_jwt(user_factory, station_factory):
             self.accepted = True
 
     ws = _FakeWS()
-    with pytest.raises(Exception):
+    with pytest.raises(AuthTokenInvalid):
         await _authenticate_ws(ws, None)
     assert ws.closed[0] == 1008
 
@@ -231,8 +271,8 @@ async def test_ws_connection_rejects_other_users_session(
     app_client, user_factory, station_factory, make_qr_payload
 ):
     """Connecting to another user's session is rejected (403 forbidden)."""
-    user_a, token_a, _ = await user_factory()
-    user_b, _token_b, _ = await user_factory()
+    _user_a, token_a, _ = await user_factory()
+    _user_b, _token_b, _ = await user_factory()
     _station, poles = await station_factory()
     qr = make_qr_payload(poles[0].id)
 
@@ -290,7 +330,7 @@ async def test_ws_receives_telemetry_frames(
         stop.set()
         try:
             await asyncio.wait_for(task, timeout=2.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             task.cancel()
 
     assert received, "no telemetry frames received"

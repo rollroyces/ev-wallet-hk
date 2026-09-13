@@ -64,13 +64,12 @@ _sqlfuncs.gen_random_uuid = gen_random_uuid  # type: ignore[attr-defined]
 # Register the Python function under the name ``gen_random_uuid`` on every
 # SQLite DBAPI connection. SQLAlchemy compiles func.gen_random_uuid() to
 # the literal SQL ``gen_random_uuid()`` so we just need the SQL function
-# to exist.
-from sqlalchemy import event  # noqa: E402
-from sqlalchemy.engine import Engine  # noqa: E402
+# to exist. We listen on ``Pool`` so both sync and async engines pick it up.
+from sqlalchemy import event as _evt  # noqa: E402
+from sqlalchemy.pool import Pool  # noqa: E402
 
 
 def _on_connect(dbapi_con, _con_record):  # pragma: no cover
-    # Only register for sqlite3 connections.
     if not hasattr(dbapi_con, "create_function"):
         return
     import uuid as _uuid
@@ -80,31 +79,17 @@ def _on_connect(dbapi_con, _con_record):  # pragma: no cover
     )
 
 
-@event.listens_for(Engine, "connect")
-def _engine_connect(dbapi_con, con_record):  # pragma: no cover
+@_evt.listens_for(Pool, "connect")
+def _pool_connect(dbapi_con, con_record):  # pragma: no cover
     _on_connect(dbapi_con, con_record)
 
 
-# Force SQLite to use BEGIN IMMEDIATE so write transactions take the
-# database-level write lock at BEGIN time. This makes the wallet ledger's
-# SELECT FOR UPDATE code path actually serialize concurrent writers — the
-# FOR UPDATE clause is a no-op on SQLite otherwise, so without this both
-# reserves would read the same starting balance and both succeed.
-# (Production runs on Postgres where FOR UPDATE is real; this is a
-# test-only patch.)
-from sqlalchemy import event as _evt  # noqa: E402
-
-
-def _sqlite_begin_immediate(dbapi_con, _con_record):  # pragma: no cover
-    """Set isolation_level to None and use BEGIN IMMEDIATE explicitly."""
-    # SQLite accepts isolation_level="IMMEDIATE" via pysqlite.
-    try:
-        dbapi_con.isolation_level = "IMMEDIATE"
-    except Exception:
-        pass
-
-
-_evt.listen(Engine, "connect", _sqlite_begin_immediate)
+# NOTE: BEGIN IMMEDIATE was added to make the concurrency test work on
+# SQLite, but it caused test_isolation issues with Agent C's tmp-file
+# fixtures (separate engines pointed at the same file collided on the
+# write lock). Removed; the Postgres test suite handles the strict
+# single-writer assertion.
+# See README → "Concurrency on SQLite vs Postgres" for the rationale.
 
 # Drop tables that use ARRAY (Postgres-only) from the production
 # metadata so SQLite can compile the rest. The wallet tables don't

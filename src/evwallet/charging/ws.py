@@ -29,7 +29,7 @@ import json
 import random
 import uuid
 from contextlib import suppress
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -150,7 +150,6 @@ async def _update_session(
 # Local import for select (kept here to avoid polluting module top-level).
 from sqlalchemy import desc, select  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Synthetic telemetry generator
 # ---------------------------------------------------------------------------
@@ -173,13 +172,13 @@ async def _synthetic_telemetry_loop(
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=_TICK_SECONDS)
             break  # stop requested mid-wait
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
         kwh = kwh + _TICK_KWH_DELTA
         kw = _TICK_KW_BASE + Decimal(str(random.uniform(-0.8, 0.8)))
         soc = min(100, soc + 1)
         cost = (kwh * cost_per_kwh).quantize(Decimal("0.01"))
-        ts = datetime.now(tz=timezone.utc).isoformat()
+        ts = datetime.now(tz=UTC).isoformat()
         frame = {
             "type": "telemetry",
             "ts": ts,
@@ -203,7 +202,7 @@ async def _synthetic_telemetry_loop(
                 )
                 await db.commit()
             await publish_to_redis(redis, session_id=session_id, frame_dict=frame)
-        except Exception as exc:  # noqa: BLE001 — telemetry loop must not crash the WS
+        except Exception as exc:
             _log.warning(
                 "ws.telemetry.publish_failed session=%s err=%s", session_id, exc
             )
@@ -301,10 +300,10 @@ async def _settle_session(session_id: uuid.UUID, user_id: uuid.UUID) -> dict[str
         if rate <= 0:
             rate = Decimal("9.20")
         # Compute duration.
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
         started = session.started_at
         if started is not None and started.tzinfo is None:
-            started = started.replace(tzinfo=timezone.utc)
+            started = started.replace(tzinfo=UTC)
         duration = max(0, int((now - started).total_seconds())) if started else 0
         # Mark session completed locally for the response.
         session.status = "completed"
@@ -450,7 +449,7 @@ async def handle_session_stream(
             )
     except WebSocketDisconnect:
         pass
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _log.exception(
             "ws.error session=%s user=%s trace_id=%s err=%s",
             session_id,

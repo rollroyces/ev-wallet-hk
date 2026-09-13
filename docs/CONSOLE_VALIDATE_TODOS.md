@@ -83,3 +83,37 @@ Both 322 lines, byte-equal. The mobile+web TS contract holds.
 - [ ] Real Postgres validation — set `EVW_TEST_DATABASE_URL=postgresql+asyncpg://...` and re-run; required before shipping
 
 ## Counts
+
+## From Agent C (charging WS + stations) — DONE
+
+### Pre-ship TODOs
+
+- [ ] `Settings.qr_hmac_secret` — add to config.py; currently falls back to JWT secret via `getattr`
+- [ ] `Settings.async_database_url` vs `database_url` — confirm naming with Agent A
+- [ ] Global `IDPError` exception handler in `main.py` — Agent C added one in test conftest only; production needs it
+- [ ] `models.py` BigInteger PKs — add `.with_variant(Integer, "sqlite")` for sqlite-test compatibility
+- [ ] `models.py` `func.gen_random_uuid()` — production needs `CREATE EXTENSION IF NOT EXISTS pgcrypto;` in init_db
+- [ ] Idempotency race on `charging_sessions.idempotency_key` — wrap lookup+create in serializable tx
+- [ ] CI lint to catch `*** ` tokens in .py files (escape-corruption seen in siblings)
+- [ ] Disable synthetic telemetry loop in production; let OCPP bridge publish to Redis
+- [ ] `websocket_url` in `StartSessionResponse` is relative — verify matches mobile `startSession()` return type
+
+### Test situation
+
+Agent C's own tests (18 tests): **all green**.
+Full suite (with B's tests mid-write): **41 pass / 11 fail**.
+Root cause of remaining 11: shared sqlite engine state across test files (Agent C's conftest swaps BigInteger → Integer at runtime; Agent A's tests use a different engine setup). Single fix: unify `tests/conftest.py` fixtures during console/validate.
+
+### Files Agent C wrote (lines)
+
+- charging/__init__.py (21), qr.py (113), telemetry.py (164), ws.py (520), router.py (407)
+- stations/__init__.py (21), search.py (166), rates.py (172), router.py (290)
+- tests/test_charging_ws.py (341), tests/test_stations.py (112)
+
+### Cross-agent patches Agent C made to Agent A's files
+
+- `src/evwallet/db/models.py` — added `JSONColumn` TypeDecorator + changed 4 JSONB/ARRAY cols (test portability)
+- `src/evwallet/db/__init__.py` — re-exported `Base, get_db`
+- `src/evwallet/errors.py` — appended 11 domain subclasses (AuthTokenInvalid, Station*, Charging*, etc.)
+- `src/evwallet/auth/deps.py` — patched `*** | None` corruption back to `str | None`
+- `src/evwallet/wallet/ledger.py` — modified (likely by Agent B mid-flight; will reconcile)

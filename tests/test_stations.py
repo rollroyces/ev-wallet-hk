@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import uuid
-from datetime import datetime, time, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
 
-from evwallet.db.models import ChargingStation, HourlyRate, Pole
 from evwallet.stations.search import haversine_km, search_stations
-
 
 # ---------------------------------------------------------------------------
 # search_stations
@@ -95,7 +92,7 @@ async def test_get_pole_rates_window_returns_24_hours(db_session, station_factor
     from evwallet.stations.rates import get_pole_rates_window
 
     rows = await get_pole_rates_window(
-        db_session, pole_id=pole.id, date_local=datetime(2026, 9, 14, tzinfo=timezone.utc).date()
+        db_session, pole_id=pole.id, date_local=datetime(2026, 9, 14, tzinfo=UTC).date()
     )
     assert len(rows) == 24
     seen_hours = {r["hour_start_local"] for r in rows}
@@ -109,7 +106,7 @@ async def test_get_current_rate_at_specific_hour(db_session, station_factory):
     pole = poles[0]
     from evwallet.stations.rates import get_current_rate
 
-    ts = datetime(2026, 9, 14, 14, 30, tzinfo=timezone.utc)  # 14:00 UTC
+    ts = datetime(2026, 9, 14, 14, 30, tzinfo=UTC)  # 14:00 UTC
     rate = await get_current_rate(db_session, pole_id=pole.id, ts_local=ts)
     assert rate is not None
     assert Decimal(rate["price_per_kwh_hkd"]) == Decimal("12.50")

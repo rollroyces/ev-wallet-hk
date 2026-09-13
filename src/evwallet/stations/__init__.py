@@ -18,4 +18,4 @@ def build_stations_router() -> APIRouter:
     return build_router()
 
 
-__all__ = ["build_stations_router", "build_router"]
+__all__ = ["build_router", "build_stations_router"]

@@ -12,12 +12,12 @@ Public entry points:
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db.models import HourlyRate
@@ -55,7 +55,7 @@ async def get_pole_rates_window(
             pole exists before returning rate data.)
     """
     day_of_week = _hk_date_to_day_of_week(date_local)
-    valid_from_anchor = datetime(date_local.year, date_local.month, date_local.day, tzinfo=timezone.utc)
+    valid_from_anchor = datetime(date_local.year, date_local.month, date_local.day, tzinfo=UTC)
     next_day = valid_from_anchor + timedelta(days=1)
 
     # Fetch any rates that overlap this local day. ``valid_to`` may be NULL

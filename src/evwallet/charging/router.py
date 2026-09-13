@@ -17,11 +17,11 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -175,10 +175,7 @@ async def start_session(
     # 4. Compute pre-auth amount (capped).
     settings = get_settings()
     cap = Decimal(settings.preauth_max_hkd)
-    if body.preauth_hkd is None:
-        preauth = cap
-    else:
-        preauth = min(Decimal(body.preauth_hkd), cap)
+    preauth = cap if body.preauth_hkd is None else min(Decimal(body.preauth_hkd), cap)
     if preauth <= 0:
         raise ChargingPreauthExceeded(
             "Pre-auth amount must be positive",
@@ -231,7 +228,7 @@ async def start_session(
         txn_reserve_id=txn_row.id if txn_row is not None else None,
         status="pending",
         target_soc_pct=body.target_soc_pct,
-        started_at=datetime.now(tz=timezone.utc),
+        started_at=datetime.now(tz=UTC),
         preauth_hkd=preauth,
         idempotency_key=idem_key,
         metadata_json={},
@@ -328,15 +325,35 @@ async def end_session(
         )
 
     # Settle via Agent B's reservation module.
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     started = session.started_at
     if started is not None and started.tzinfo is None:
-        started = started.replace(tzinfo=timezone.utc)
+        started = started.replace(tzinfo=UTC)
     duration = (
         max(0, int((now - started).total_seconds())) if started is not None else 0
     )
     final_cost = Decimal(session.running_cost_hkd or 0)
     kwh = Decimal(session.kwh_delivered or 0)
+
+    # No telemetry → nothing to settle. Mark session completed and return.
+    if kwh <= 0 and final_cost <= 0:
+        session.status = "completed"
+        session.ended_at = now
+        await db.commit()
+        _log.info(
+            "session.end.no_charging session=%s user=%s duration=%s",
+            session_id,
+            user.id,
+            duration,
+        )
+        return EndSessionResponse(
+            final_cost_hkd=Decimal("0"),
+            kwh_delivered=Decimal("0"),
+            duration_seconds=duration,
+            transaction_id=None,
+            refunded_hkd=Decimal("0"),
+        )
+
     rate = (final_cost / kwh) if kwh > 0 else Decimal("9.20")
     if rate <= 0:
         rate = Decimal("9.20")

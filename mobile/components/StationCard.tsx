@@ -2,15 +2,34 @@
  * Reusable station card — used in search results and "nearby" lists.
  */
 
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Linking, Pressable, StyleSheet, Text, View } from "react-native";
 import type { Station } from "../lib/types";
+import { mapsNavigationUrl } from "../lib/navigation";
 
 export interface StationCardProps {
   station: Station;
   onPress?: (s: Station) => void;
+  /** When true, shows a "Navigate" button that opens the platform's
+   * maps app with turn-by-turn directions. Defaults to true on mobile,
+   * hidden on web (where it would just be a static link). */
+  showNavigate?: boolean;
 }
 
-export function StationCard({ station, onPress }: StationCardProps): React.JSX.Element {
+export function StationCard({
+  station,
+  onPress,
+  showNavigate = true,
+}: StationCardProps): React.JSX.Element {
+  const openNavigate = () => {
+    void Linking.openURL(
+      mapsNavigationUrl({
+        latitude: Number(station.latitude),
+        longitude: Number(station.longitude),
+        name: station.name,
+      }),
+    );
+  };
+
   return (
     <Pressable
       onPress={() => onPress?.(station)}
@@ -38,6 +57,19 @@ export function StationCard({ station, onPress }: StationCardProps): React.JSX.E
           <Text style={styles.metaText}>· {station.amenities.slice(0, 2).join(", ")}</Text>
         ) : null}
       </View>
+      {showNavigate ? (
+        <Pressable
+          style={styles.navigateBtn}
+          onPress={(e) => {
+            e.stopPropagation?.();
+            openNavigate();
+          }}
+          accessibilityRole="button"
+          accessibilityLabel={`Navigate to ${station.name}`}
+        >
+          <Text style={styles.navigateBtnText}>Navigate</Text>
+        </Pressable>
+      ) : null}
     </Pressable>
   );
 }
@@ -90,5 +122,18 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: "#64748b",
     marginRight: 6,
+  },
+  navigateBtn: {
+    alignSelf: "flex-start",
+    marginTop: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    backgroundColor: "#0f172a",
+    borderRadius: 8,
+  },
+  navigateBtnText: {
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "600",
   },
 });

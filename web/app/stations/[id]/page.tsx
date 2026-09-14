@@ -1,6 +1,7 @@
 import { redirect, notFound } from 'next/navigation';
 import { getApiClient, getCookieHeader, ApiError } from '@/lib/api';
 import { Nav } from '@/components/nav';
+import { NavigateButton } from '@/components/navigate-button';
 import { Rates24hChart } from './rates-chart';
 
 export const dynamic = 'force-dynamic';
@@ -33,14 +34,23 @@ export default async function StationDetailPage({
     <>
       <Nav user={{ display_name: user.display_name, is_admin: user.is_admin }} />
       <main style={{ maxWidth: 1100, margin: '0 auto', padding: '1.5rem 1rem' }}>
-        <h1>{station.station.name}</h1>
-        <p className="muted">
-          {station.station.address}
-          {station.station.district ? ` · ${station.station.district}` : ''}
-        </p>
-        <div className="muted" style={{ fontSize: '0.85rem', marginBottom: '1rem' }}>
-          Provider: <span className="tag-pill">{station.station.provider_code}</span>{' '}
-          Parking fee: {station.station.parking_fee_hkd} HKD
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem' }}>
+          <div>
+            <h1 style={{ marginBottom: '0.25rem' }}>{station.station.name}</h1>
+            <p className="muted" style={{ marginTop: 0 }}>
+              {station.station.address}
+              {station.station.district ? ` · ${station.station.district}` : ''}
+            </p>
+            <div className="muted" style={{ fontSize: '0.85rem' }}>
+              Provider: <span className="tag-pill">{station.station.provider_code}</span>{' '}
+              Parking fee: {station.station.parking_fee_hkd} HKD
+            </div>
+          </div>
+          <NavigateButton
+            latitude={Number(station.station.latitude)}
+            longitude={Number(station.station.longitude)}
+            name={station.station.name}
+          />
         </div>
 
         <h2>24-hour rates (HKD / kWh)</h2>

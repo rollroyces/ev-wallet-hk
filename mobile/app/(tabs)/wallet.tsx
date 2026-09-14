@@ -3,6 +3,7 @@
  */
 
 import { useQuery } from "@tanstack/react-query";
+import { useRouter } from "expo-router";
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { api } from "../../lib/api";
 import { BalanceDisplay } from "../../components/BalanceDisplay";
@@ -35,6 +36,7 @@ function sign(amount: string, kind: WalletTransaction["kind"]): string {
 }
 
 export default function WalletScreen(): React.JSX.Element {
+  const router = useRouter();
   const walletQuery = useQuery({
     queryKey: ["wallet"],
     queryFn: () => api.getWallet(),
@@ -68,6 +70,14 @@ export default function WalletScreen(): React.JSX.Element {
   return (
     <View style={styles.container}>
       <BalanceDisplay wallet={wallet} currency={wallet.currency} />
+      <Pressable
+        style={styles.topupBtn}
+        onPress={() => router.push("/topup")}
+        accessibilityRole="button"
+        accessibilityLabel="Top up wallet"
+      >
+        <Text style={styles.topupBtnText}>+ Top up wallet</Text>
+      </Pressable>
       <Text style={styles.sectionTitle}>Recent transactions</Text>
       <FlatList
         data={wallet.recent_transactions}
@@ -149,5 +159,18 @@ const styles = StyleSheet.create({
     color: "#64748b",
     textAlign: "center",
     marginTop: 24,
+  },
+  topupBtn: {
+    marginHorizontal: 16,
+    marginTop: 12,
+    backgroundColor: "#0f172a",
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: "center",
+  },
+  topupBtnText: {
+    color: "#fff",
+    fontWeight: "700",
+    fontSize: 15,
   },
 });

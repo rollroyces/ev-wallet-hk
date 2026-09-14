@@ -63,10 +63,30 @@ export interface ApiClient {
   getWalletTransactions(cursor?: string): Promise<PaginatedTransactions>;
   topUp(req: TopUpRequest): Promise<TopUpResult>;
 
+  // --- Intent creation (kicks off a topup before client confirms payment) ---
+  createStripeIntent(amountHkd: string): Promise<StripeIntentResult>;
+  createApplePayIntent(): Promise<ApplePayIntentResult>;
+
   // --- Extensions beyond ARCHITECTURE.md contract ---
   registerPushToken(req: PushTokenRegistrationRequest): Promise<PushTokenRegistrationResult>;
   getSession(id: string): Promise<ChargingSession>;
   getSessions(limit?: number): Promise<ChargingSession[]>;
+}
+
+// Re-exported types the topup screen needs.
+export interface StripeIntentResult {
+  payment_intent_id: string;
+  client_secret: string;
+  amount_hkd: string;
+  currency: string;
+}
+
+export interface ApplePayIntentResult {
+  merchant_id: string;
+  supported_networks: string[];
+  merchant_capabilities: string[];
+  currency: string;
+  country_code: string;
 }
 
 interface FetchOptions {
@@ -396,6 +416,23 @@ export const api: ApiClient = {
     return request<ChargingSession[]>(
       "/api/v1/charging/sessions",
       { method: "GET", query: { limit } },
+      tryRefresh,
+    );
+  },
+
+  // ---------- Topup intent creation ----------
+  async createStripeIntent(amountHkd) {
+    return request<StripeIntentResult>(
+      "/api/v1/wallet/topup/stripe/intent",
+      { method: "POST", body: { amount_hkd: amountHkd } },
+      tryRefresh,
+    );
+  },
+
+  async createApplePayIntent() {
+    return request<ApplePayIntentResult>(
+      "/api/v1/wallet/topup/apple/intent",
+      { method: "POST" },
       tryRefresh,
     );
   },

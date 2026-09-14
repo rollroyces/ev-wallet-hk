@@ -2,6 +2,7 @@ import { redirect } from 'next/navigation';
 import { getApiClient, getCookieHeader } from '@/lib/api';
 import { ApiError } from '@/lib/api';
 import { Nav } from '@/components/nav';
+import { TopupButton } from '@/components/topup-button';
 
 export const dynamic = 'force-dynamic';
 
@@ -33,7 +34,10 @@ export default async function DashboardPage() {
     <>
       <Nav user={{ display_name: user.display_name, is_admin: user.is_admin }} />
       <main style={{ maxWidth: 960, margin: '0 auto', padding: '1.5rem 1rem' }}>
-        <h1>Wallet</h1>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
+          <h1 style={{ margin: 0 }}>Wallet</h1>
+          <TopupButton />
+        </div>
         <div
           style={{
             display: 'grid',

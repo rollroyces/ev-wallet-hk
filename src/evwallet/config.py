@@ -90,6 +90,16 @@ class Settings(BaseSettings):
     # /api/v1/internal/* endpoints return 503 except in 'development' env.
     internal_token: str | None = None
 
+    # Free CKAN API key from data.gov.hk. Required by the CLP adapter to
+    # fetch live station data via the Open Data proxy. Register at
+    # https://data.gov.hk/en/help/ckan-api-development-guide (5 min).
+    datagovhk_api_key: str | None = None
+
+    # Optional override of the CLP origin URL. Defaults to the 2026-08-15
+    # successor URL; flip back to https://api.clp.com.hk/evcharger/list if
+    # you need the legacy endpoint.
+    clp_api_url: str | None = None
+
     stripe_secret_key: str | None = None
     stripe_webhook_secret: str | None = None
     apple_pay_merchant_id: str | None = None

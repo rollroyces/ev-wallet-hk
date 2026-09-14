@@ -11,13 +11,13 @@ All internal endpoints are gated by a shared bearer token
 from __future__ import annotations
 
 import hmac
+import logging
 import uuid
 from datetime import UTC, datetime
-from decimal import Decimal
-from typing import Annotated, Any
+from typing import Annotated
 
+import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
-from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,6 +32,8 @@ from ..db.models import (
     WalletTransaction,
 )
 from ..db.session import get_db
+from .providers import ADAPTERS, ProviderUnavailable
+from .schemas import StationUpsertIn, StationUpsertOut
 
 # ---------------------------------------------------------------------------
 # Auth gate for n8n-style endpoints
@@ -60,109 +62,93 @@ async def require_internal_token(
 
 
 # ---------------------------------------------------------------------------
-# Request / response models
-# ---------------------------------------------------------------------------
-
-
-class PoleUpsertIn(BaseModel):
-    external_id: str
-    connector: str
-    speed_tier: str
-    max_kw: Decimal
-    qr_code: str | None = None  # generated server-side if missing
-    status: str = "available"
-    status_updated_at: datetime | None = None
-
-
-class StationUpsertIn(BaseModel):
-    provider_code: str
-    external_id: str
-    name: str
-    address: str
-    district: str | None = None
-    latitude: Decimal
-    longitude: Decimal
-    parking_fee_hkd: Decimal = Decimal("0")
-    amenities: list[str] = Field(default_factory=list)
-    raw_payload: dict[str, Any] = Field(default_factory=dict)
-    poles: list[PoleUpsertIn] = Field(default_factory=list)
-
-
-class StationUpsertOut(BaseModel):
-    station_id: uuid.UUID
-    external_id: str
-    poles_created: int
-    poles_updated: int
-
-
-class RateUpsertIn(BaseModel):
-    pole_external_id: str
-    station_external_id: str
-    provider_code: str
-    day_of_week: int = Field(ge=0, le=6)
-    hour_start_local: int = Field(ge=0, le=23)
-    price_per_kwh_hkd: Decimal
-    parking_fee_hkd: Decimal = Decimal("0")
-    valid_from: datetime
-    valid_to: datetime | None = None
-
-
-class BulkRateUpsertIn(BaseModel):
-    rates: list[RateUpsertIn]
-
-
-class BulkRateUpsertOut(BaseModel):
-    rates_upserted: int
-
-
-class AdminStationRow(BaseModel):
-    id: uuid.UUID
-    external_id: str
-    provider_code: str
-    name: str
-    address: str
-    district: str | None
-    last_synced_at: datetime
-    pole_count: int
-
-    class Config:
-        from_attributes = True
-
-
-class AdminTransactionRow(BaseModel):
-    id: uuid.UUID
-    wallet_id: uuid.UUID
-    user_email: str | None
-    kind: str
-    status: str
-    amount: Decimal
-    currency: str
-    posted_at: datetime
-
-    class Config:
-        from_attributes = True
-
-
-class PushTokenRegisterIn(BaseModel):
-    token: str = Field(min_length=1, max_length=512)
-    platform: str = Field(pattern="^(ios|android)$")
-    device_id: str | None = None
-
-
-class PushTokenRegisterOut(BaseModel):
-    id: uuid.UUID
-    token: str
-    platform: str
-    created_at: datetime
-
-
-# ---------------------------------------------------------------------------
 # Router factory
 # ---------------------------------------------------------------------------
+#
+# Pydantic models for the /internal/* endpoints live in ``schemas.py`` to
+# break the circular import with ``providers.py`` (which uses them as
+# adapter return types). The router re-exports them so the existing
+# ``from evwallet.internal.router import StationUpsertIn`` keeps working.
+# ---------------------------------------------------------------------------
+from .schemas import (  # noqa: E402, F401 — re-export
+    AdminStationRow,
+    AdminTransactionRow,
+    BulkRateUpsertIn,
+    BulkRateUpsertOut,
+    PoleUpsertIn,
+    PushTokenRegisterIn,
+    PushTokenRegisterOut,
+    RateUpsertIn,
+)
+
+_log = logging.getLogger(__name__)
+
+
+def _get_http_client() -> httpx.AsyncClient:
+    """Reuse a single httpx client across the request lifecycle for efficiency."""
+    return httpx.AsyncClient(timeout=60.0, follow_redirects=True)
 
 
 def build_router() -> APIRouter:
     router = APIRouter(prefix="/internal", tags=["internal"])
+
+    # --- Provider polling (n8n calls these) ---------------------------------
+
+    @router.get(
+        "/providers/{provider_code}/stations",
+        response_model=list[StationUpsertIn],
+        dependencies=[Depends(require_internal_token)],
+    )
+    async def get_provider_stations(
+        provider_code: str,
+    ) -> list[StationUpsertIn]:
+        """Fetch live station data for a single provider, in canonical shape.
+
+        Called by the n8n polling workflows (hkev-poll, clp-poll, etc.).
+        Returns a JSON array of ``StationUpsertIn`` records — the same shape
+        the workflows POST to ``/stations/upsert``.
+
+        Provider adapters:
+        - ``clp``  → real CLP API (data.gov.hk Open Data proxy, requires
+          ``EVW_DATAGOVHK_API_KEY``)
+        - ``epd``  → HK EPD quarterly XLSX (covers all non-CLP / non-Tesla
+          operators in one batch; no real-time status)
+        - ``hkev`` / ``shell`` / ``tesla`` → return HTTP 503 with
+          ``ProviderUnavailable`` + contact email (no public API; see
+          docs/research/OPERATORS.md)
+        """
+        adapter_cls = ADAPTERS.get(provider_code.lower())
+        if adapter_cls is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "code": "PROVIDER_NOT_REGISTERED",
+                    "provider_code": provider_code,
+                    "known": sorted(ADAPTERS.keys()),
+                },
+            )
+
+        async with _get_http_client() as client:
+            adapter = adapter_cls(http_client=client)
+            try:
+                results = await adapter.fetch()
+            except ProviderUnavailable as exc:
+                _log.warning(
+                    "provider %s unavailable: %s (contact=%s)",
+                    provider_code, exc, exc.contact_email,
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "code": "PROVIDER_UNAVAILABLE",
+                        "provider_code": provider_code,
+                        "message": str(exc),
+                        "contact_email": exc.contact_email,
+                    },
+                ) from exc
+
+        _log.info("provider %s returned %d stations", provider_code, len(results))
+        return [r.station for r in results]
 
     # --- n8n ingestion ------------------------------------------------------
 

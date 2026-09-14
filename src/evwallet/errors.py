@@ -83,6 +83,13 @@ class WalletNotFoundError(WalletError):
     status: int = 404
 
 
+class ConflictError(IDPError):
+    """Resource already exists (e.g. duplicate email on signup)."""
+
+    code: str = "CONFLICT"
+    status: int = 409
+
+
 class PaymentError(IDPError):
     """Base for payments domain errors."""
 

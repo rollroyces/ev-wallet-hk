@@ -65,6 +65,21 @@ def get_engine() -> AsyncEngine:
             echo=False,
             future=True,
         )
+        # SQLite compatibility: register Postgres-only SQL functions
+        # (gen_random_uuid, etc.) on every connection. Idempotent on
+        # non-sqlite dialects (create_function is checked).
+        if settings.async_database_url.startswith("sqlite"):
+            from sqlalchemy import event
+
+            def _on_connect(dbapi_conn, _record):  # pragma: no cover - sqlite-only
+                import uuid as _uuid
+
+                if hasattr(dbapi_conn, "create_function"):
+                    dbapi_conn.create_function(
+                        "gen_random_uuid", 0, lambda: str(_uuid.uuid4())
+                    )
+
+            event.listens_for(_engine.sync_engine, "connect")(_on_connect)
         _sessionmaker = async_sessionmaker(
             _engine,
             class_=AsyncSession,

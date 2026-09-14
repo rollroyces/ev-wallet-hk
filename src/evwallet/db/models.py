@@ -99,6 +99,7 @@ class User(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         primary_key=True,
+        default=uuid.uuid4,
         server_default=func.gen_random_uuid(),
     )
     email: Mapped[str | None] = mapped_column(String(254), unique=True, index=True, nullable=True)
@@ -109,6 +110,10 @@ class User(Base):
     locale: Mapped[str] = mapped_column(String(16), nullable=False, default="zh-Hant")
     is_active: Mapped[bool] = mapped_column(nullable=False, default=True)
     is_admin: Mapped[bool] = mapped_column(nullable=False, default=False)
+    # Argon2 hash of the password. Nullable because OAuth-only users
+    # (Apple, Google) never set a local password. Production-only field;
+    # the dev-mode login shortcut ignores it.
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
@@ -153,6 +158,7 @@ class SocialAccount(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         primary_key=True,
+        default=uuid.uuid4,
         server_default=func.gen_random_uuid(),
     )
     user_id: Mapped[uuid.UUID] = mapped_column(
@@ -208,6 +214,7 @@ class Wallet(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         primary_key=True,
+        default=uuid.uuid4,
         server_default=func.gen_random_uuid(),
     )
     user_id: Mapped[uuid.UUID] = mapped_column(
@@ -266,6 +273,7 @@ class WalletTransaction(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         primary_key=True,
+        default=uuid.uuid4,
         server_default=func.gen_random_uuid(),
     )
     wallet_id: Mapped[uuid.UUID] = mapped_column(
@@ -370,6 +378,7 @@ class ChargingStation(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         primary_key=True,
+        default=uuid.uuid4,
         server_default=func.gen_random_uuid(),
     )
     external_id: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -434,6 +443,7 @@ class Pole(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         primary_key=True,
+        default=uuid.uuid4,
         server_default=func.gen_random_uuid(),
     )
     station_id: Mapped[uuid.UUID] = mapped_column(
@@ -541,6 +551,7 @@ class ChargingSession(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         primary_key=True,
+        default=uuid.uuid4,
         server_default=func.gen_random_uuid(),
     )
     user_id: Mapped[uuid.UUID] = mapped_column(

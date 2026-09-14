@@ -117,3 +117,77 @@ export async function logoutAction(): Promise<void> {
   const store = await cookies();
   store.delete(AUTH_COOKIE_NAME);
 }
+
+/**
+ * Register a new account via email + password. Mirrors loginAction's
+ * cookie propagation: forwards the backend's Set-Cookie (or its
+ * JSON body fallback) to the browser.
+ */
+export async function registerAction(formData: FormData): Promise<LoginActionResult> {
+  const email = String(formData.get('email') ?? '');
+  const password = String(formData.get('password') ?? '');
+  const confirm = String(formData.get('confirm') ?? '');
+
+  if (password !== confirm) {
+    return { ok: false, message: "Passwords don't match." };
+  }
+  if (password.length < 8) {
+    return { ok: false, message: 'Password must be at least 8 characters.' };
+  }
+
+  try {
+    const res = await fetch(`${API_BASE_URL}${API_PREFIX}/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ email, password }),
+      cache: 'no-store',
+    });
+
+    if (!res.ok) {
+      try {
+        const errBody = (await res.json()) as { error?: { code?: string; message?: string } };
+        const code = errBody.error?.code;
+        if (code === 'EMAIL_ALREADY_REGISTERED' || code === 'CONFLICT') {
+          return {
+            ok: false,
+            message: 'An account with that email already exists. Try signing in.',
+          };
+        }
+        return { ok: false, message: errBody.error?.message ?? 'Sign up failed' };
+      } catch {
+        return { ok: false, message: `Sign up failed (HTTP ${res.status})` };
+      }
+    }
+
+    // Same cookie-propagation logic as loginAction.
+    const setCookie = res.headers.get('set-cookie');
+    const store = await cookies();
+    const writeCookie = (name: string, value: string) =>
+      store.set({
+        name,
+        value,
+        httpOnly: true,
+        sameSite: 'lax',
+        path: '/',
+        secure: process.env.NODE_ENV === 'production',
+      });
+
+    if (setCookie) {
+      const firstPair = setCookie.split(';')[0] ?? '';
+      const eq = firstPair.indexOf('=');
+      if (eq > 0) {
+        writeCookie(firstPair.slice(0, eq).trim(), firstPair.slice(eq + 1).trim());
+      }
+    } else {
+      const data = (await res.json()) as { access_token?: string };
+      if (data.access_token) writeCookie(AUTH_COOKIE_NAME, data.access_token);
+    }
+
+    return { ok: true, message: 'ok' };
+  } catch (e) {
+    if (e instanceof ApiError) {
+      return { ok: false, message: e.message };
+    }
+    return { ok: false, message: `Cannot reach API at ${API_BASE_URL}` };
+  }
+}

@@ -137,6 +137,31 @@ async def db_session(test_db_url):
 
 
 @pytest_asyncio.fixture
+async def clean_users(test_db_url):
+    """Delete all users before the test runs.
+
+    The signup/login tests use `create_app()` which reads its DB URL from
+    Settings (not the per-test SQLite URL the test_db_url fixture swaps
+    in). That means they hit the live Postgres test DB at localhost:5433
+    when run in CI, and any leftover rows from earlier manual tests can
+    pollute results. Wipe the users table first.
+
+    Tradeoff: tests using this fixture are NOT parallelisable against
+    the same Postgres. That's fine for now (we serialise auth tests
+    anyway via monkeypatch.get_settings.cache_clear()).
+    """
+    from sqlalchemy import text
+    engine = create_async_engine(test_db_url, future=True)
+    try:
+        async with engine.begin() as conn:
+            # CASCADE removes wallets, sessions, ledger entries, etc.
+            await conn.execute(text("DELETE FROM users"))
+    finally:
+        await engine.dispose()
+    yield
+
+
+@pytest_asyncio.fixture
 async def user_factory(db_session):
     """Returns ``async (email=None) -> (User, jwt_token, Wallet)``.
 

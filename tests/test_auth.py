@@ -711,3 +711,192 @@ async def test_apple_login_returns_existing_user_on_second_call(
 async def test_auth_placeholder() -> None:
     """Trivial placeholder preserved from the original test file."""
     assert True
+
+
+# ---------------------------------------------------------------------------
+# Email + password /register and /login
+# ---------------------------------------------------------------------------
+
+
+async def test_register_creates_user_and_returns_session(
+    test_db_url, monkeypatch, clean_users
+) -> None:
+    """POST /auth/register with a fresh email creates the user + wallet
+    and returns a session — auto-login on signup."""
+    from evwallet.db.models import User, Wallet
+    from evwallet.main import create_app
+
+    # Point Settings at the per-test DB (not the live Postgres). We have
+    # to set it via env var BEFORE clearing the cache, because cache_clear
+    # re-reads from the environment.
+    monkeypatch.setenv("EVW_DEV_LOGIN", "false")
+    monkeypatch.setenv("EVW_DATABASE_URL", test_db_url)
+    get_settings.cache_clear()
+
+    app = create_app()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as ac:
+        r = await ac.post(
+            "/api/v1/auth/register",
+            json={"email": "new-user@evwallet-test.com", "password": "validPass123"},
+        )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert "access_token" in body and len(body["access_token"]) > 20
+    assert body["user"]["email"] == "new-user@evwallet-test.com"
+    assert body["user"]["display_name"] == "new-user"
+
+    # DB has the user + wallet
+    engine = create_async_engine(get_settings().database_url or test_db_url)
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+    async with Session() as db:
+        user = (
+            await db.execute(
+                select(User).where(User.email == "new-user@evwallet-test.com")
+            )
+        ).scalar_one()
+        assert user.password_hash is not None
+        assert user.password_hash.startswith("$argon2id$")
+        wallet = (
+            await db.execute(select(Wallet).where(Wallet.user_id == user.id))
+        ).scalar_one()
+        assert wallet.available_credits == 0
+    await engine.dispose()
+
+
+async def test_register_rejects_duplicate_email(test_db_url, monkeypatch, clean_users) -> None:
+    """Second POST with the same email returns 409 CONFLICT."""
+    from evwallet.main import create_app
+
+    monkeypatch.setenv("EVW_DEV_LOGIN", "false")
+    monkeypatch.setenv("EVW_DATABASE_URL", test_db_url)
+    get_settings.cache_clear()
+
+    app = create_app()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as ac:
+        r1 = await ac.post(
+            "/api/v1/auth/register",
+            json={"email": "dup@evwallet-test.com", "password": "validPass123"},
+        )
+        assert r1.status_code == 201
+        r2 = await ac.post(
+            "/api/v1/auth/register",
+            json={"email": "dup@evwallet-test.com", "password": "validPass456"},
+        )
+    assert r2.status_code == 409, r2.text
+    body = r2.json()
+    assert body["error"]["code"] == "CONFLICT"
+    assert body["error"]["details"]["code"] == "EMAIL_ALREADY_REGISTERED"
+
+
+async def test_login_with_correct_password_succeeds(
+    test_db_url, monkeypatch, clean_users
+) -> None:
+    """Production-mode login verifies the Argon2 hash."""
+    from evwallet.main import create_app
+
+    monkeypatch.setenv("EVW_DEV_LOGIN", "false")
+    monkeypatch.setenv("EVW_DATABASE_URL", test_db_url)
+    get_settings.cache_clear()
+
+    app = create_app()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as ac:
+        await ac.post(
+            "/api/v1/auth/register",
+            json={"email": "bob@evwallet-test.com", "password": "correctPass123"},
+        )
+        r = await ac.post(
+            "/api/v1/auth/login",
+            json={"email": "bob@evwallet-test.com", "password": "correctPass123"},
+        )
+    assert r.status_code == 200, r.text
+    assert "access_token" in r.json()
+
+
+async def test_login_with_wrong_password_returns_invalid_creds(
+    test_db_url, monkeypatch, clean_users
+) -> None:
+    """Wrong password returns 422 with AUTH_INVALID_CREDENTIALS (same
+    message as unknown-email to avoid leaking which is which)."""
+    from evwallet.main import create_app
+
+    monkeypatch.setenv("EVW_DEV_LOGIN", "false")
+    monkeypatch.setenv("EVW_DATABASE_URL", test_db_url)
+    get_settings.cache_clear()
+
+    app = create_app()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as ac:
+        await ac.post(
+            "/api/v1/auth/register",
+            json={"email": "carol@evwallet-test.com", "password": "rightPass123"},
+        )
+        r = await ac.post(
+            "/api/v1/auth/login",
+            json={"email": "carol@evwallet-test.com", "password": "wrongPass123"},
+        )
+        r_unknown = await ac.post(
+            "/api/v1/auth/login",
+            json={"email": "nobody@nowhere.com", "password": "anyPass12345"},
+        )
+
+    # Both return the same generic error so an attacker can't enumerate users.
+    assert r.status_code == r_unknown.status_code == 422
+    msg1 = r.json()["error"]["details"]["code"]
+    msg2 = r_unknown.json()["error"]["details"]["code"]
+    assert msg1 == msg2 == "AUTH_INVALID_CREDENTIALS"
+
+
+async def test_dev_login_auto_creates_user_with_password_hash(
+    test_db_url, monkeypatch, clean_users
+) -> None:
+    """When EVW_DEV_LOGIN=true, login auto-creates the user AND sets
+    a real Argon2 hash — so flipping the flag off later still works."""
+    from evwallet.db.models import User
+    from evwallet.main import create_app
+
+    monkeypatch.setenv("EVW_DEV_LOGIN", "true")
+    monkeypatch.setenv("EVW_DATABASE_URL", test_db_url)
+    get_settings.cache_clear()
+
+    app = create_app()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as ac:
+        r = await ac.post(
+            "/api/v1/auth/login",
+            json={"email": "dev-user@evwallet-test.com", "password": "anyPass123"},
+        )
+    assert r.status_code == 200
+
+    # Hash is set on the dev-created user
+    engine = create_async_engine(get_settings().database_url or test_db_url)
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+    async with Session() as db:
+        user = (
+            await db.execute(
+                select(User).where(User.email == "dev-user@evwallet-test.com")
+            )
+        ).scalar_one()
+        assert user.password_hash is not None
+        assert user.password_hash.startswith("$argon2id$")
+    await engine.dispose()
+
+
+async def test_password_hash_round_trip() -> None:
+    """hash_password + verify_password round-trip — sanity check on the
+    argon2 wrapper."""
+    from evwallet.auth.password import hash_password, verify_password
+
+    h = hash_password("hello")
+    assert h.startswith("$argon2id$")
+    assert verify_password("hello", h) is True
+    assert verify_password("wrong", h) is False
+    assert verify_password("hello", None) is False
+    assert verify_password("hello", "garbage") is False

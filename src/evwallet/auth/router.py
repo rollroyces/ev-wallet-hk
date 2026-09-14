@@ -31,10 +31,14 @@ from evwallet.auth.apple import verify_apple_identity_token
 from evwallet.auth.deps import current_user
 from evwallet.auth.google import verify_google_id_token
 from evwallet.auth.jwt import encode_jwt
+from evwallet.auth.password import hash_password, verify_password
 from evwallet.config import get_settings
 from evwallet.db.models import SocialAccount, User, Wallet
 from evwallet.db.session import get_db
-from evwallet.errors import SchemaValidationError
+from evwallet.errors import (
+    ConflictError,
+    SchemaValidationError,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -48,6 +52,17 @@ router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 class LoginRequest(BaseModel):
     """Email + password login request body."""
+
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=128)
+
+
+class RegisterRequest(BaseModel):
+    """Email + password signup request body.
+
+    Returns a session on success — the user is auto-logged-in after
+    signup, matching standard web UX.
+    """
 
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
@@ -281,43 +296,51 @@ def _make_session(user: User) -> SessionResponse:
     "/login",
     response_model=SessionResponse,
     status_code=status.HTTP_200_OK,
-    summary="Email + password login (DEV-ONLY shortcut when EVW_DEV_LOGIN=true)",
+    summary="Email + password login (real password verify; dev-mode shortcut when EVW_DEV_LOGIN=true)",
 )
 async def login(
     body: LoginRequest,
     db: AsyncSession = Depends(get_db),
 ) -> SessionResponse:
-    """DEV-ONLY login shortcut for local web UI testing.
+    """Authenticate via email + password.
 
-    The production credential flow (bcrypt verify, lockout policy, password
-    reset, etc.) is a separate phase. Until that's built, this endpoint:
-      - When Settings.dev_login is True (env: EVW_DEV_LOGIN=true), looks
-        up a user by email (auto-creating if missing) and returns a
-        session. The ``password`` field is ignored — it's accepted only
-        to match the API contract.
-      - When dev_login is False, raises AUTH_LOGIN_NOT_IMPLEMENTED as
-        before (production-safe default).
+    Behaviour:
+      - Production (Settings.dev_login=False, the default): look up the
+        user, verify the Argon2 hash. Wrong password = 401 AUTH_INVALID_CREDENTIALS.
+      - Dev mode (EVW_DEV_LOGIN=true): auto-creates the user on first
+        sign-in with the password set to the dev hash (so the production
+        path works the moment you flip the flag off). The supplied
+        password is accepted as-is.
 
-    DELETE THIS HANDLER before deploying to production. The flag check
-    exists for defence-in-depth, but the endpoint should not ship.
+    Why the dev shortcut is gated: the production password flow is the
+    only safe default. Dev convenience never leaks into prod by accident.
     """
     settings = get_settings()
-    if not settings.dev_login:
-        raise SchemaValidationError(
-            "email/password login is not yet implemented",
-            details={"code": "AUTH_LOGIN_NOT_IMPLEMENTED"},
-        )
+    email_lower = body.email.lower()
 
-    # Auto-create the user on first login (test environment only).
+    # Production path: verify the password hash.
+    if not settings.dev_login:
+        user = (
+            await db.execute(select(User).where(User.email == email_lower))
+        ).scalar_one_or_none()
+        if user is None or not verify_password(body.password, user.password_hash):
+            raise SchemaValidationError(
+                "invalid email or password",
+                details={"code": "AUTH_INVALID_CREDENTIALS"},
+            )
+        return _make_session(user)
+
+    # Dev-mode path: auto-create the user on first login.
     user = (
-        await db.execute(select(User).where(User.email == body.email.lower()))
+        await db.execute(select(User).where(User.email == email_lower))
     ).scalar_one_or_none()
     if user is None:
-        from evwallet.db.models import Wallet  # local import to avoid cycle
-
         user = User(
-            email=body.email.lower(),
-            display_name=body.email.split("@", 1)[0],
+            email=email_lower,
+            display_name=email_lower.split("@", 1)[0],
+            # Set the password hash too — when the dev flag is flipped off,
+            # the same user can sign in with the same password.
+            password_hash=hash_password(body.password),
         )
         db.add(user)
         await db.flush()
@@ -325,6 +348,65 @@ async def login(
         db.add(wallet)
         await db.commit()
         await db.refresh(user)
+    # NB: we do NOT mutate an existing user's password hash here. Dev
+    # mode is for local UI testing — auto-updating the hash would mean
+    # the first wrong-password login in dev mode silently "locks in"
+    # the wrong password, and the user can't sign in once the dev flag
+    # is flipped off. If you change password in dev mode, run /register
+    # with a new email instead.
+
+    return _make_session(user)
+
+
+@router.post(
+    "/register",
+    response_model=SessionResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Email + password signup (creates user + wallet + session)",
+)
+async def register(
+    body: RegisterRequest,
+    db: AsyncSession = Depends(get_db),
+) -> SessionResponse:
+    """Create a new local user with email + password.
+
+    Hashes the password with Argon2id and creates a Wallet row in the
+    same transaction. On success, returns a session — the user is
+    auto-logged-in, matching standard web signup UX. Apple/Google
+    signups still happen via /auth/apple and /auth/google (no password).
+
+    Raises 409 CONFLICT if the email is already taken (whether the
+    existing account is a local password user or an OAuth-only user —
+    we don't allow email collisions across providers).
+    """
+    email_lower = body.email.lower()
+    existing = (
+        await db.execute(select(User).where(User.email == email_lower))
+    ).scalar_one_or_none()
+    if existing is not None:
+        raise ConflictError(
+            "an account with that email already exists",
+            details={"code": "EMAIL_ALREADY_REGISTERED"},
+        )
+
+    user = User(
+        email=email_lower,
+        display_name=email_lower.split("@", 1)[0],
+        password_hash=hash_password(body.password),
+    )
+    db.add(user)
+    await db.flush()
+    wallet = Wallet(user_id=user.id)
+    db.add(wallet)
+    await db.commit()
+
+    # Refresh so any server-default fields (id, created_at, updated_at)
+    # are populated on the in-memory instance before _make_session reads
+    # them. Calling refresh() after commit() can fail on some dialects
+    # because the session is in 'expired' state; setting
+    # ``expire_on_commit=False`` at sessionmaker level (done in
+    # ``db/session.py``) makes this safe.
+    await db.refresh(user)
 
     return _make_session(user)
 

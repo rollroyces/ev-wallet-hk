@@ -19,7 +19,9 @@ const adminLinks: { href: string; label: string }[] = [
 export function Nav({
   user,
 }: {
-  user: { display_name: string; is_admin: boolean };
+  /** Undefined on public pages (login/signup). The Nav hides the
+   * profile chip and admin links when undefined. */
+  user?: { display_name: string; is_admin: boolean };
 }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -33,7 +35,35 @@ export function Nav({
     });
   }
 
-  const links = user.is_admin ? [...baseLinks, ...adminLinks] : baseLinks;
+  const isAdmin = user?.is_admin ?? false;
+  const displayName = user?.display_name ?? "";
+
+  // When not logged in (login/signup pages), only show the brand mark
+  // and a "Sign in" / "Sign up" link — no profile chip, no log-out button.
+  if (!user) {
+    return (
+      <nav
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '1rem',
+          padding: '0.75rem 1rem',
+          borderBottom: '1px solid var(--border)',
+          background: 'var(--card)',
+        }}
+      >
+        <Link href="/" style={{ fontWeight: 600, marginRight: '1rem' }}>
+          EV Wallet HK
+        </Link>
+        <div style={{ flex: 1 }} />
+        <Link href="/login" style={{ fontSize: '0.85rem' }}>
+          Sign in
+        </Link>
+      </nav>
+    );
+  }
+
+  const links = isAdmin ? [...baseLinks, ...adminLinks] : baseLinks;
 
   return (
     <nav
@@ -69,7 +99,7 @@ export function Nav({
         })}
       </div>
       <span className="muted" style={{ fontSize: '0.85rem' }}>
-        {user.display_name}
+        {displayName}
       </span>
       <button className="btn" type="button" onClick={onLogout} disabled={isPending}>
         {isPending ? '…' : 'Sign out'}

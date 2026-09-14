@@ -120,6 +120,16 @@ async function request<T>(
   if (opts.body !== undefined) headersInit['Content-Type'] = 'application/json';
   if (cookieHeader) headersInit['Cookie'] = cookieHeader;
 
+  // The backend's auth middleware expects ``Authorization: Bearer <token>``,
+  // not a Cookie header. Extract the JWT from the forwarded ``evw_auth``
+  // cookie so server-rendered pages can call authenticated endpoints.
+  if (cookieHeader) {
+    const match = /(?:^|;\s*)evw_auth=([^;]+)/.exec(cookieHeader);
+    if (match && match[1]) {
+      headersInit['Authorization'] = `Bearer ${decodeURIComponent(match[1])}`;
+    }
+  }
+
   const init: RequestInit = {
     method: opts.method ?? 'GET',
     headers: headersInit,

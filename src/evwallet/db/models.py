@@ -38,7 +38,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import TypeDecorator
 
@@ -382,7 +382,9 @@ class ChargingStation(Base):
     parking_fee_hkd: Mapped[Decimal] = mapped_column(
         Numeric(12, 4), nullable=False, default=Decimal("0")
     )
-    amenities: Mapped[list[str]] = mapped_column(JSONColumn, nullable=False, default=list)
+    amenities: Mapped[list[str]] = mapped_column(
+        "amenities", ARRAY(String), nullable=False, default=list
+    )
     raw_payload: Mapped[dict[str, Any]] = mapped_column(
         "raw", JSONColumn, nullable=False, default=dict
     )
@@ -416,11 +418,11 @@ class Pole(Base):
         Index("ix_poles_station_id", "station_id"),
         Index("ix_poles_qr_code", "qr_code"),
         CheckConstraint(
-            "connector IN ('ccs2','type2','chademo','tesla')",
+            "connector IN ('ccs2','type2','chademo','tesla','bs1363','type1','gbt_ac','tesla_nacs','tesla_wc')",
             name="poles_connector_enum",
         ),
         CheckConstraint(
-            "speed_tier IN ('ac_slow','ac_fast','dc_fast','dc_ultra')",
+            "speed_tier IN ('ac_slow','ac_fast','dc_fast','dc_ultra','unknown')",
             name="poles_speed_tier_enum",
         ),
         CheckConstraint(

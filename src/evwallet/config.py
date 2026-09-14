@@ -106,6 +106,10 @@ class Settings(BaseSettings):
     # account in the browser; it's safe to ship in JS). Secret key must
     # NEVER leave the server.
     stripe_publishable_key: str | None = None
+    # DEV-ONLY shortcut: when True, POST /auth/login accepts any email +
+    # any password, auto-creates the user, and returns a session. Never
+    # set this to True in production.
+    dev_login: bool = False
     apple_pay_merchant_id: str | None = None
     google_pay_merchant_id: str | None = None
     # Apple Sign-In bundle id — the value the Apple JWT 'aud' claim must

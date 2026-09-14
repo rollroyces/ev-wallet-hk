@@ -49,6 +49,7 @@ class StationSummary(BaseModel):
     amenities: list[str]
     distance_km: float
     matched_pole_count: int
+    provider_code: str
 
 
 class StationSearchResponse(BaseModel):
@@ -118,6 +119,7 @@ def _station_to_summary(row: dict[str, Any]) -> StationSummary:
         amenities=list(row.get("amenities") or []),
         distance_km=float(row["distance_km"]),
         matched_pole_count=int(row.get("matched_pole_count", 0)),
+        provider_code=str(row.get("provider_code", "unknown")),
     )
 
 

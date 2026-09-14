@@ -93,6 +93,15 @@ def _patch_bigint_for_sqlite():
         if _cls is not None and "id" in _cls.__table__.columns:
             _cls.__table__.columns["id"].type = _sqlite_bigint
 
+    # ARRAY(String) is Postgres-only. SQLite can't compile it. Swap the
+    # amenities column on ChargingStation to a JSON column so SQLite can
+    # create the table for unit tests.
+    if hasattr(_models_module, "ChargingStation"):
+        _cls = _models_module.ChargingStation
+        if "amenities" in _cls.__table__.columns:
+            from sqlalchemy import JSON as _JSON
+            _cls.__table__.columns["amenities"].type = _JSON()
+
 
 @pytest_asyncio.fixture
 async def test_db_url(tmp_path, monkeypatch):

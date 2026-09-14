@@ -27,10 +27,13 @@ export default async function StationsPage({
     const me = await api.me();
     user = me.user;
     const result = await api.getStations({
-      // lat/lng optional — when omitted, the backend returns all stations
-      // (depends on impl). We pass 0 as a placeholder; backend may ignore.
-      lat: 0,
-      lng: 0,
+      // HK Central default — the backend's /stations endpoint requires
+      // lat/lng (it builds a bounding-box filter around them). Until the
+      // web exposes a "use my location" feature, default to HK Central so
+      // users see HK-wide results.
+      lat: 22.302711,
+      lng: 114.177216,
+      radius_km: 100, // 100km covers all of HK
       connector: (params.connector as ConnectorType | undefined),
       min_kw: params.min_kw ? Number(params.min_kw) : undefined,
       limit: 100,

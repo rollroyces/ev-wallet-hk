@@ -31,6 +31,7 @@ from evwallet.auth.apple import verify_apple_identity_token
 from evwallet.auth.deps import current_user
 from evwallet.auth.google import verify_google_id_token
 from evwallet.auth.jwt import encode_jwt
+from evwallet.config import get_settings
 from evwallet.db.models import SocialAccount, User, Wallet
 from evwallet.db.session import get_db
 from evwallet.errors import SchemaValidationError
@@ -280,25 +281,52 @@ def _make_session(user: User) -> SessionResponse:
     "/login",
     response_model=SessionResponse,
     status_code=status.HTTP_200_OK,
-    summary="Email + password login (stub — full flow wired in a later phase)",
+    summary="Email + password login (DEV-ONLY shortcut when EVW_DEV_LOGIN=true)",
 )
 async def login(
     body: LoginRequest,
     db: AsyncSession = Depends(get_db),
 ) -> SessionResponse:
-    """Authenticate via email + password.
+    """DEV-ONLY login shortcut for local web UI testing.
 
-    NOTE: The full credential flow (bcrypt verify, lockout policy, etc.)
-    is wired in a follow-up phase. For now this endpoint intentionally
-    raises a SchemaValidationError so callers see a clear "not yet
-    implemented" signal instead of a silent success. Agent A documents
-    the gap; Agents D/E should treat the endpoint as a 501 until the
-    password flow lands.
+    The production credential flow (bcrypt verify, lockout policy, password
+    reset, etc.) is a separate phase. Until that's built, this endpoint:
+      - When Settings.dev_login is True (env: EVW_DEV_LOGIN=true), looks
+        up a user by email (auto-creating if missing) and returns a
+        session. The ``password`` field is ignored — it's accepted only
+        to match the API contract.
+      - When dev_login is False, raises AUTH_LOGIN_NOT_IMPLEMENTED as
+        before (production-safe default).
+
+    DELETE THIS HANDLER before deploying to production. The flag check
+    exists for defence-in-depth, but the endpoint should not ship.
     """
-    raise SchemaValidationError(
-        "email/password login is not yet implemented",
-        details={"code": "AUTH_LOGIN_NOT_IMPLEMENTED"},
-    )
+    settings = get_settings()
+    if not settings.dev_login:
+        raise SchemaValidationError(
+            "email/password login is not yet implemented",
+            details={"code": "AUTH_LOGIN_NOT_IMPLEMENTED"},
+        )
+
+    # Auto-create the user on first login (test environment only).
+    user = (
+        await db.execute(select(User).where(User.email == body.email.lower()))
+    ).scalar_one_or_none()
+    if user is None:
+        from evwallet.db.models import Wallet  # local import to avoid cycle
+
+        user = User(
+            email=body.email.lower(),
+            display_name=body.email.split("@", 1)[0],
+        )
+        db.add(user)
+        await db.flush()
+        wallet = Wallet(user_id=user.id)
+        db.add(wallet)
+        await db.commit()
+        await db.refresh(user)
+
+    return _make_session(user)
 
 
 @router.post(

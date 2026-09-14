@@ -90,9 +90,24 @@ export interface TopUpResult {
 // Stations
 // ---------------------------------------------------------------------------
 
-export type ConnectorType = "ccs2" | "type2" | "chademo" | "tesla";
+export type ConnectorType =
+  | "ccs2"
+  | "type2"
+  | "chademo"
+  | "tesla"
+  | "bs1363"
+  | "type1"
+  | "gbt_ac"
+  | "tesla_nacs"
+  | "tesla_wc";
 export type SpeedTier = "ac_slow" | "ac_fast" | "dc_fast" | "dc_ultra";
-export type StationProviderCode = "hkev" | "clp" | "shell" | "tesla";
+export type StationProviderCode =
+  | "hkev"
+  | "clp"
+  | "shell"
+  | "tesla"
+  | "epd"
+  | "unknown";
 
 export interface Station {
   id: string;

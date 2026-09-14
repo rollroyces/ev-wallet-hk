@@ -7,10 +7,12 @@ Public surface:
     * :func:`verify_google_id_token` — Google OAuth verifier
     * :class:`AuthRouter` — FastAPI ``APIRouter`` for ``/api/v1/auth/*``
 
-Apple/Google verifiers support a "stub" mode when their respective keys
-are not configured — they raise a :class:`ConfigurationError`-flavoured
-error so dev environments fail loudly instead of silently accepting any
-identity.
+Apple/Google verifiers always perform real cryptographic verification
+against the provider's published JWKS / OAuth keys — there is no stub
+mode. If the audience (bundle id / client id) is not configured the
+verifier raises :class:`evwallet.errors.ConfigurationError` so a
+forgotten ``.env`` rewrite fails loudly at startup instead of silently
+accepting every identity.
 """
 
 from __future__ import annotations

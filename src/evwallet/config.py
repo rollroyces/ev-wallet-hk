@@ -94,6 +94,26 @@ class Settings(BaseSettings):
     stripe_webhook_secret: str | None = None
     apple_pay_merchant_id: str | None = None
     google_pay_merchant_id: str | None = None
+    # Apple Sign-In bundle id — the value the Apple JWT 'aud' claim must
+    # equal for identity-token verification (per docs/ARCHITECTURE.md).
+    # Falls back to apple_pay_merchant_id when not provided.
+    apple_bundle_id: str | None = None
+    # Optional salt mixed into the Apple Sign-In nonce. When set, the
+    # verifier hashes the client-supplied nonce with this salt before
+    # comparing against the JWT 'nonce' claim so plaintext nonces never
+    # leak via log lines or DB rows.
+    apple_nonce_salt: str | None = None
+    # Google OAuth client id used for sign-in (and as the default audience
+    # for Google Pay verify_token when google_googlepay_audience is unset).
+    google_client_id: str | None = None
+    # Audience claim expected in Google Pay signed JWTs (verify_token).
+    # Usually the Google Pay merchant gateway id; falls back to
+    # google_client_id when not provided.
+    google_googlepay_audience: str | None = None
+    # Path to a Google service-account JSON key file used by the
+    # server-to-server Google Pay signing path. None disables signing
+    # and surfaces a structured error to the caller.
+    google_sa_key_path: str | None = None
 
     cors_origins: str = ""
     database_url: str | None = None

@@ -192,6 +192,15 @@ class Wallet(Base):
     __tablename__ = "wallets"
     __table_args__ = (
         UniqueConstraint("user_id", name="wallets_user_id_uniq"),
+        # NOTE (2026-09): available_credits / reserved_credits are LEGACY
+        # columns. The canonical balance lives in the ledger (LedgerEntry
+        # rows summed by bucket); see get_balance() in evwallet.wallet.ledger.
+        # These columns are kept in the schema for back-compat with external
+        # reporting/BI tooling but no production code writes to them. The
+        # CHECK constraints below are belt-and-braces — a leftover from the
+        # legacy invariant; new code paths use the journal, not these columns.
+        # A future migration can drop the columns + constraints entirely once
+        # we've confirmed no BI tool reads them.
         CheckConstraint("available_credits >= 0", name="wallets_available_nonneg"),
         CheckConstraint("reserved_credits >= 0", name="wallets_reserved_nonneg"),
     )
@@ -206,6 +215,8 @@ class Wallet(Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
     )
+    # LEGACY columns — see the table-args note above. Use
+    # ``evwallet.wallet.ledger.get_balance`` for the authoritative balance.
     available_credits: Mapped[Decimal] = mapped_column(
         Numeric(12, 4), nullable=False, default=Decimal("0")
     )

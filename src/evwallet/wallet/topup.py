@@ -109,27 +109,38 @@ async def topup_apple_pay(
         db: Active async session.
         wallet_id: Target wallet UUID.
         amount_hkd: Amount to credit (Decimal).
-        apple_payload: PKPayment token payload — must contain ``transactionIdentifier``
-            and ``paymentData``.
+        apple_payload: PKPayment token payload — must contain
+            ``transactionIdentifier`` and a ``paymentData`` object
+            whose ``version`` / ``data`` / ``signature`` / ``header``
+            fields are well-formed base64 (plus ASN.1-parseable
+            signature). The verifier also cross-checks any declared
+            amount against ``amount_hkd``.
 
     Returns:
         The persisted WalletTransaction.
 
     Raises:
-        PaymentError: If Apple Pay payload is structurally invalid.
+        ApplePayValidationError: If the Apple Pay payload fails
+            structural verification (raised before any ledger write).
         ValidationError: If amount is non-positive or exceeds cap.
     """
     amount = _validate_topup_amount(amount_hkd)
 
-    # Structural validation only — full PKPaymentToken signature validation
-    # requires the Apple merchant identity cert and is done by an out-of-band
-    # service in production. See apple_google.py TODO.
-    apple_google.validate_apple_pay_payload(apple_payload, expected_amount=amount)
-
-    token_id = apple_payload.get("transactionIdentifier") or ""
+    # Full PKPaymentToken verification (base64 + ASN.1 + declared
+    # amount cross-check). Full cryptographic chain validation against
+    # the merchant identity cert is gated on
+    # Settings.apple_pay_merchant_cert_path — see the TODO inside
+    # apple_google.verify_apple_pay_token.
+    verified = await apple_google.verify_apple_pay_token(
+        apple_payload, expected_amount=amount
+    )
+    token_id = str(verified.get("token_id") or "")
     if not token_id:
+        # Defensive — verify_apple_pay_token already raised if the id
+        # was missing, but a future refactor must not silently drop
+        # the idempotency key.
         raise PaymentError(
-            "apple_payload.transactionIdentifier missing",
+            "apple_payload.transactionIdentifier missing after verify",
             details={"source": "apple_pay"},
         )
     return await _post_topup(
@@ -137,7 +148,13 @@ async def topup_apple_pay(
         wallet_id,
         amount,
         external_ref=f"apple_pay:{token_id}",
-        metadata=_jsonable_metadata({"source": "apple_pay", "transaction_id": token_id}),
+        metadata=_jsonable_metadata(
+            {
+                "source": "apple_pay",
+                "transaction_id": token_id,
+                "verified": True,
+            }
+        ),
     )
 
 
@@ -153,29 +170,42 @@ async def topup_google_pay(
         db: Active async session.
         wallet_id: Target wallet UUID.
         amount_hkd: Amount to credit (Decimal).
-        google_payload: Google Pay token payload — must contain a token string.
+        google_payload: Google Pay token payload — must contain a
+            ``token`` (or ``id``) JWT string signed by Google. The
+            verifier checks the audience, issuer, and declared amount.
 
     Returns:
         The persisted WalletTransaction.
 
     Raises:
-        PaymentError: If Google Pay payload is structurally invalid.
+        GooglePayValidationError: If the Google Pay payload fails
+            verification (raised before any ledger write).
         ValidationError: If amount is non-positive or exceeds cap.
     """
     amount = _validate_topup_amount(amount_hkd)
 
-    google_google = apple_google  # alias for clarity
-    google_google.validate_google_pay_payload(google_payload, expected_amount=amount)
-
-    token = google_payload.get("id") or google_payload.get("token") or ""
-    if not token:
-        raise PaymentError("google_payload.id/token missing", details={"source": "google_pay"})
+    verified = await apple_google.verify_google_pay_token(
+        google_payload, expected_amount=amount
+    )
+    token_id = str(verified.get("token_id") or "")
+    if not token_id:
+        raise PaymentError(
+            "google_payload.id/token missing after verify",
+            details={"source": "google_pay"},
+        )
     return await _post_topup(
         db,
         wallet_id,
         amount,
-        external_ref=f"google_pay:{token}",
-        metadata=_jsonable_metadata({"source": "google_pay", "token": token}),
+        external_ref=f"google_pay:{token_id}",
+        metadata=_jsonable_metadata(
+            {
+                "source": "google_pay",
+                "token": token_id,
+                "email": verified.get("email"),
+                "verified": True,
+            }
+        ),
     )
 
 

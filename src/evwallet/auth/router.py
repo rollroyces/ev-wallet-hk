@@ -172,6 +172,24 @@ async def _upsert_oauth_user(
     if row is not None:
         _existing_social, existing_user = row
         _log.info("auth upsert hit provider=%s sub=%s", provider, provider_subject[:8])
+        # Backfill email / display_name if the provider later reveals more
+        # than we recorded on first sign-in. Apple in particular returns
+        # the email only on the first sign-in for some flows, and only
+        # echoes a name the very first time; subsequent sign-ins may
+        # carry an email we hadn't recorded yet.
+        new_email: str | None = None
+        new_display: str | None = None
+        if email and not existing_user.email:
+            existing_user.email = email
+            existing_user.updated_at = datetime.now(tz=UTC)
+            new_email = email
+        if display_name and not existing_user.display_name:
+            existing_user.display_name = display_name
+            existing_user.updated_at = datetime.now(tz=UTC)
+            new_display = display_name
+        if new_email or new_display:
+            await db.commit()
+            await db.refresh(existing_user)
         return existing_user
 
     user = User(
@@ -293,10 +311,18 @@ async def login_apple(
     body: AppleLoginRequest,
     db: AsyncSession = Depends(get_db),
 ) -> SessionResponse:
-    """Verify an Apple identity token, upsert the user, return a session."""
-    claims = verify_apple_identity_token(body.identity_token)
-    provider_subject: str = claims["sub"]
-    email_claim: str | None = claims.get("email")
+    """Verify an Apple identity token, upsert the user, return a session.
+
+    Apple only returns the user's display name on the FIRST sign-in; clients
+    are expected to forward that name in ``full_name`` on the very first
+    /auth/apple call so the row can be populated. The verifier emits a
+    typed :class:`~evwallet.auth.apple.AppleIdentityClaims` and the
+    handler maps verifier failures to a canonical 401
+    ``AUTH_APPLE_TOKEN_INVALID`` envelope.
+    """
+    claims = await verify_apple_identity_token(body.identity_token)
+    provider_subject: str = claims.apple_sub
+    email_claim: str | None = claims.email
     # Apple only returns the user's name on the FIRST sign-in; clients
     # pass it through so we can populate the row.
     display_name = body.full_name or email_claim or ""
@@ -320,11 +346,16 @@ async def login_google(
     body: GoogleLoginRequest,
     db: AsyncSession = Depends(get_db),
 ) -> SessionResponse:
-    """Verify a Google ID token, upsert the user, return a session."""
+    """Verify a Google ID token, upsert the user, return a session.
+
+    The verifier emits a typed :class:`~evwallet.auth.google.GoogleIdentityClaims`
+    and the handler maps verifier failures to a canonical 401
+    ``AUTH_GOOGLE_TOKEN_INVALID`` envelope.
+    """
     claims = verify_google_id_token(body.id_token)
-    provider_subject: str = claims["sub"]
-    email_claim: str | None = claims.get("email")
-    display_name: str = claims.get("name") or email_claim or ""
+    provider_subject: str = claims.google_sub
+    email_claim: str | None = claims.email
+    display_name: str = claims.name or email_claim or ""
     user = await _upsert_oauth_user(
         db,
         provider="google",

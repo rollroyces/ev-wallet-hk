@@ -7,15 +7,19 @@ from collections.abc import Sequence
 from decimal import Decimal
 from typing import Annotated, Any
 
+import stripe
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from stripe import StripeError
 
 from evwallet.auth.deps import current_user
+from evwallet.config import get_settings
 from evwallet.db.models import User, Wallet, WalletTransaction
 from evwallet.db.session import get_db
 from evwallet.errors import (
+    BackendUnavailableError,
     ValidationError,
     WalletNotFoundError,
 )
@@ -221,6 +225,121 @@ async def get_balance(
     """Return the current user's wallet balance only (no transactions)."""
     wallet = await _load_wallet_for_user(db, user)
     return BalanceOut(available_hkd=wallet.available_credits, reserved_hkd=wallet.reserved_credits)
+
+
+# ---------------------------------------------------------------------------
+# Intent creation — used by web/mobile to kick off a topup before calling
+# POST /wallet/topup with the resulting payment id.
+# ---------------------------------------------------------------------------
+
+
+class TopupIntentIn(BaseModel):
+    """Body for intent-creation endpoints.
+
+    ``amount_hkd`` is the wallet-credit amount the user is requesting. The
+    gateway will charge a slightly larger amount (e.g. amount + 1.5% fee) but
+    the wallet credit is always ``amount_hkd`` as requested.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    amount_hkd: Decimal = Field(gt=Decimal("0"), le=Decimal("10000"))
+
+
+class StripeIntentOut(BaseModel):
+    """Response from POST /wallet/topup/stripe/intent."""
+
+    payment_intent_id: str
+    client_secret: str
+    amount_hkd: Decimal
+    currency: str = "hkd"
+
+
+@router.post("/topup/stripe/intent", response_model=StripeIntentOut)
+async def create_stripe_topup_intent(
+    body: TopupIntentIn,
+    user: Annotated[User, Depends(current_user)],
+) -> StripeIntentOut:
+    """Create a Stripe PaymentIntent for a wallet topup.
+
+    Returns the ``client_secret`` so the client can confirm the payment
+    via ``stripe.confirmCardPayment(client_secret, ...)`` in the browser,
+    or via the native Stripe sheet on mobile. The webhook
+    ``POST /api/v1/payments/stripe/webhook`` handles settlement —
+    afterwards the wallet is credited via the existing
+    ``/wallet/topup?source=stripe`` path.
+
+    Returns ``BackendUnavailableError`` (503) if Stripe is not configured
+    (no ``EVW_STRIPE_SECRET_KEY``) so the web/mobile UI can fall back to
+    Apple/Google Pay.
+    """
+    settings = get_settings()
+    if not settings.stripe_secret_key:
+        raise BackendUnavailableError(
+            "stripe topup unavailable: EVW_STRIPE_SECRET_KEY not configured",
+        )
+
+    # Convert HKD to the smallest currency unit (cents).
+    amount_cents = int((body.amount_hkd * 100).quantize(Decimal("1")))
+
+    try:
+        intent = stripe.PaymentIntent.create(
+            amount=amount_cents,
+            currency="hkd",
+            metadata={
+                "wallet_user_id": str(user.id),
+                "purpose": "ev_wallet_topup",
+                "credit_amount_hkd": str(body.amount_hkd),
+            },
+            automatic_payment_methods={"enabled": True},
+        )
+    except StripeError as e:
+        _log.error("stripe.payment_intents.create failed", extra={"error": str(e)})
+        raise BackendUnavailableError(f"stripe error: {e.user_message or 'unknown'}") from e
+
+    return StripeIntentOut(
+        payment_intent_id=intent.id,
+        client_secret=intent.client_secret or "",
+        amount_hkd=body.amount_hkd,
+    )
+
+
+class ApplePayIntentOut(BaseModel):
+    """Response from POST /wallet/topup/apple/intent.
+
+    Apple Pay doesn't have a server-side "intent" the way Stripe does —
+    the PKPaymentToken is generated client-side. This endpoint exists
+    primarily to validate the merchant configuration is present
+    (Apple Pay merchant id + Apple Wallet signing key) and to return the
+    merchant identity the client should present to the Apple Pay sheet.
+    """
+
+    merchant_id: str
+    supported_networks: list[str] = Field(default_factory=lambda: ["visa", "masterCard", "amex"])
+    merchant_capabilities: list[str] = Field(default_factory=lambda: ["supports3DS"])
+    currency: str = "HKD"
+    country_code: str = "HK"
+
+
+@router.post("/topup/apple/intent", response_model=ApplePayIntentOut)
+async def create_apple_pay_topup_intent(
+    _user: Annotated[User, Depends(current_user)],
+) -> ApplePayIntentOut:
+    """Return the Apple Pay merchant configuration for the client sheet.
+
+    The actual PKPaymentToken is generated client-side via ``expo-apple-pay``
+    (or ``PassKit`` in bare iOS) and posted to ``POST /wallet/topup``
+    with ``source=apple_pay`` for validator + settlement.
+
+    Returns ``BackendUnavailableError`` (503) if ``EVW_APPLE_PAY_MERCHANT_ID``
+    is not configured.
+    """
+    settings = get_settings()
+    if not settings.apple_pay_merchant_id:
+        raise BackendUnavailableError(
+            "apple pay topup unavailable: EVW_APPLE_PAY_MERCHANT_ID not configured",
+        )
+    return ApplePayIntentOut(merchant_id=settings.apple_pay_merchant_id)
 
 
 def build_router() -> APIRouter:

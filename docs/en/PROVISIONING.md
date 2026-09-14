@@ -245,6 +245,39 @@ firewall and rely on Cloudflare Tunnel for all remote access.
 
 ## I. Smoke test the stack
 
+### 0. Pre-flight check (run BEFORE the smoke test below)
+
+After you finish Steps A–G, the repo ships a readiness script that catches
+the most common deployment issues (missing tools, placeholder secrets,
+uninstalled launchd plists, etc.) in one shot:
+
+```bash
+cd ~/projects/ev-wallet-hk
+./scripts/provision_check.sh
+```
+
+Output is color-coded:
+- ✓ green = passed
+- ! yellow = warning (e.g., missing optional secret)
+- ✗ red = blocking failure (fix before deploying)
+
+The script exits 0 when ready, 1 on any blocking issue. Sections it covers:
+
+- **A. Required tools** — docker, docker compose, rclone, apcupsd, cloudflared
+- **B. .env secrets** — all `EVW_*` required + optional variables present and non-placeholder
+- **C. Secret strength** — `EVW_JWT_SECRET` length ≥ 32
+- **D. Docker readiness** — daemon responding
+- **E. Cloudflare tunnel** — token present and looks well-formed
+- **F. Backblaze B2** — both keys present, rclone remote configured
+- **G. UPS (apcupsd)** — `STATUS: ONLINE`
+- **H. macOS power settings** — `autorestart` + `powernap` configured
+- **I. launchd plists** — Docker auto-restart, UPS shutdown, daily backup all loaded
+
+If the script reports failures, fix them and re-run until clean. The smoke
+test below assumes the pre-flight passed.
+
+### 1. Bring up the stack
+
 ```bash
 cd ~/projects/ev-wallet-hk
 mkdir -p logs

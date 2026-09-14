@@ -649,6 +649,61 @@ class PushToken(Base):
 
 
 # ---------------------------------------------------------------------------
+# Stripe webhook events — idempotency log for incoming Stripe webhook calls.
+#
+# Agent D owns this model. The PK is the Stripe event id (``evt_***``) so a
+# retry from Stripe (on non-2xx from us) is detected by unique-violation
+# rather than needing a separate dedup query.
+#
+# Status values:
+#   * 'received'  — payload stored, processing not yet attempted
+#   * 'processed' — handler ran successfully
+#   * 'failed'    — handler raised; the error message is stored in ``error``
+# ---------------------------------------------------------------------------
+
+
+class StripeWebhookEvent(Base):
+    """Idempotency log for Stripe webhook events.
+
+    The primary key is the Stripe event id (``evt_***``) which is globally
+    unique and is what Stripe uses to retry deliveries. A second delivery
+    hits the ``id`` primary-key unique constraint, which the router catches
+    and turns into a no-op 200 response — Stripe treats that as a successful
+    ack and stops retrying.
+    """
+
+    __tablename__ = "stripe_webhook_events"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('received','processed','failed')",
+            name="stripe_webhook_events_status_enum",
+        ),
+        Index("ix_stripe_webhook_events_type_received_at", "type", "received_at"),
+    )
+
+    # Stripe event id, e.g. ``evt_1PqX...``. This is the primary key —
+    # the value is stable across retries so a second insert collides on
+    # the PK and we return 200 without re-processing.
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    type: Mapped[str] = mapped_column(String(64), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+    processed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="received")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow
+    )
+
+
+# ---------------------------------------------------------------------------
 # All model names — exposed for typing helpers and Alembic autogenerate.
 # ---------------------------------------------------------------------------
 
@@ -662,6 +717,7 @@ __all__ = [
     "PushToken",
     "SessionTelemetry",
     "SocialAccount",
+    "StripeWebhookEvent",
     "User",
     "Wallet",
     "WalletTransaction",

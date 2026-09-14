@@ -174,3 +174,28 @@ The 6-agent fan-out is complete. To close the integration gaps, console/validate
 8. **Bring up docker-compose stack** (`docker compose up -d`) and `curl https://api.evwallet.com.hk/healthz`
 9. **Run real Postgres tests** (`EVW_TEST_DATABASE_URL=postgresql+asyncpg://...` + `pytest`)
 10. **Final commit with `[verified]` prefix**, tag v0.1.0
+
+---
+
+# After v0.1.0 — outstanding operator TODOs
+
+These TODOs are unblocked by either operator signup work (in `docs/PROVISIONING.md`) or a follow-up dev turn.
+
+## From Agent D (Stripe webhooks) — DONE, follow-ups:
+
+- [ ] **Mount the payments router in `main.py`** — `app.include_router(payments_router, prefix="/api/v1")` next to the other `include_router` calls. Agent D avoided `main.py` per scope; the wiring is a one-liner.
+- [ ] **Run `alembic upgrade head` against the real Postgres** so the `stripe_webhook_events` table exists in production (tests use SQLite + `Base.metadata.create_all`).
+- [ ] **Stripe dashboard config** — set the webhook endpoint to `https://api.evwallet.com.hk/api/v1/payments/stripe/webhook` and copy the signing secret into `EVW_STRIPE_WEBHOOK_SECRET`.
+- [ ] **Mobile/web PaymentIntent creation** — the client must call `stripe.paymentIntents.create({ amount, currency: 'hkd', metadata: { wallet_id } })` on Stripe's servers and pass the resulting `client_secret` to Stripe.js. The `wallet_id` metadata field is what the webhook uses to credit the right wallet. (Client-side work; not in backend scope.)
+
+## Provisioning pre-flight:
+
+- [ ] Run `./scripts/provision_check.sh` on the Mac mini after Steps A–G of `PROVISIONING.md` to catch missing tools, placeholder secrets, or unconfigured launchd plists before `docker compose up`. Script is read-only; exits 0 on ready, 1 on any blocking issue.
+
+## From Agent C (provisioning + bilingual docs) — done:
+
+- [ ] Apple Pay merchant .cer / .p8 — upload via Settings after operator finishes Step E of `PROVISIONING.md`
+- [ ] Google service account JSON — upload via Settings after operator finishes Step F
+- [ ] Stripe live keys + webhook signing secret — after operator finishes Step G
+- [ ] OCPP bridge — defer until HK provider chosen + charger hardware available
+- [ ] Bilingual docs: remaining pages (`CONSOLE_VALIDATE_TODOS`, etc.) — current translated set: README, ARCHITECTURE, BACKUP, PROVISIONING

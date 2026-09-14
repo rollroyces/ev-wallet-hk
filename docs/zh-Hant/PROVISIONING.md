@@ -190,6 +190,36 @@ cloudflared tunnel token ev-wallet-prod     # 把結果貼到 .env
 
 ## I. Smoke test 服務組合
 
+### 0. 部署前檢查（在執行下方 smoke test 之前先做）
+
+完成 Step A–G 之後，repository 內已附帶一份準備就緒檢查腳本，可以一次抓出最常見的部署問題（缺少工具、佔位符秘密、未安裝的 launchd plist 等）：
+
+```bash
+cd ~/projects/ev-wallet-hk
+./scripts/provision_check.sh
+```
+
+輸出會以顏色區分：
+- ✓ 綠色 = 通過
+- ! 黃色 = 警告（例如缺少非必要 secret）
+- ✗ 紅色 = 阻擋性失敗（部署前必須先解決）
+
+腳本在準備就緒時 exit 0，遇到任何阻擋性問題時 exit 1。涵蓋的檢查段落：
+
+- **A. 必要工具** — docker, docker compose, rclone, apcupsd, cloudflared
+- **B. .env 秘密** — 所有 `EVW_*` 必填與選填變數都存在且非佔位符
+- **C. 秘密強度** — `EVW_JWT_SECRET` 長度 ≥ 32
+- **D. Docker 就緒** — daemon 有回應
+- **E. Cloudflare tunnel** — token 存在且格式正確
+- **F. Backblaze B2** — 兩把 key 都存在，rclone remote 已設定
+- **G. UPS（apcupsd）** — `STATUS: ONLINE`
+- **H. macOS 電源設定** — `autorestart` + `powernap` 已設定
+- **I. launchd plist** — Docker auto-restart、UPS shutdown、daily backup 都已載入
+
+如果腳本回報失敗，請先修復後重跑直到全綠。下方 smoke test 假設 pre-flight 已通過。
+
+### 1. 啟動所有服務
+
 ```bash
 cd ~/projects/ev-wallet-hk
 mkdir -p logs

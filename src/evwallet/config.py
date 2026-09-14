@@ -102,6 +102,10 @@ class Settings(BaseSettings):
 
     stripe_secret_key: str | None = None
     stripe_webhook_secret: str | None = None
+    # Publishable key is exposed to the client (it identifies your Stripe
+    # account in the browser; it's safe to ship in JS). Secret key must
+    # NEVER leave the server.
+    stripe_publishable_key: str | None = None
     apple_pay_merchant_id: str | None = None
     google_pay_merchant_id: str | None = None
     # Apple Sign-In bundle id — the value the Apple JWT 'aud' claim must

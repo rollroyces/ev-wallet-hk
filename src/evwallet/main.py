@@ -363,6 +363,20 @@ def create_app() -> FastAPI:
         """Return the package version."""
         return PlainTextResponse(__version__)
 
+    @app.get("/api/v1/config/stripe", include_in_schema=False)
+    async def stripe_public_key() -> JSONResponse:
+        """Return the Stripe publishable key (or null if not configured).
+
+        The publishable key is safe to expose to the browser — it only
+        identifies your Stripe account, not authorize charges. Returns
+        ``{"publishable_key": null}`` when EVW_STRIPE_PUBLISHABLE_KEY is
+        unset, so the web client can show a friendly "Stripe not configured"
+        message instead of erroring.
+        """
+        return JSONResponse(
+            {"publishable_key": settings.stripe_publishable_key},
+        )
+
     @app.get("/metrics", include_in_schema=False)
     async def prometheus_metrics() -> Response:
         """Expose the in-process metrics registry in Prometheus format."""

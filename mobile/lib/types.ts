@@ -84,6 +84,8 @@ export interface TopUpRequest {
 export interface TopUpResult {
   transaction_id: string;
   status: WalletTransactionStatus;
+  amount_hkd?: string;
+  currency?: string;
 }
 
 // ---------------------------------------------------------------------------

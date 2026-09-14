@@ -368,7 +368,7 @@ class EPDAdapter(ProviderAdapter):
     URL_TEMPLATE = (
         "https://www.epd.gov.hk/epd/sites/default/files/epd/english/"
         "environmentinhk/air/promotion_ev/files/"
-        "EV_Charger_Locations_EPD_Web_{yyyymm}_eng.xlsx"
+        "EV_Charger_Locations_EPD_Web_{yyyymmdd}_eng.xlsx"
     )
 
     # EPD row layout (column index → meaning):
@@ -423,10 +423,10 @@ class EPDAdapter(ProviderAdapter):
         latest = await self._discover_latest_quarter()
         if not latest:
             raise ProviderUnavailable(
-                "EPD XLSX not reachable at any of the last 4 quarter-end dates"
+                "EPD XLSX not reachable at any of the last 4 quarter-end dates",
+                contact_email=None,
             )
-
-        url = self.URL_TEMPLATE.format(yyyymm=latest)
+        url = self.URL_TEMPLATE.format(yyyymmdd=latest)
         resp = await self._client.get(
             url,
             headers={
@@ -465,6 +465,10 @@ class EPDAdapter(ProviderAdapter):
         from datetime import datetime as _dt
 
         today = _dt.now(tz=UTC).date()
+        _log.info(
+            "epd.discovery.start",
+            extra={"today": today.isoformat(), "client_id": id(self._client)},
+        )
         for q_offset in range(0, 4):
             # Quarter-end months: 3, 6, 9, 12
             year = today.year
@@ -478,8 +482,12 @@ class EPDAdapter(ProviderAdapter):
                 if month <= 0:
                     month += 12
                     year -= 1
-            yyyymm = f"{year:04d}{month:02d}"
-            url = self.URL_TEMPLATE.format(yyyymm=yyyymm)
+            # Quarter-end months are always 03, 06, 09, 12; the day
+            # suffix in the file name is hardcoded to 30 (EPD always
+            # publishes at the end of the quarter).
+            yyyymmdd = f"{year:04d}{month:02d}30"
+            url = self.URL_TEMPLATE.format(yyyymmdd=yyyymmdd)
+            _log.info("epd.discovery.probe", extra={"q_offset": q_offset, "url": url})
             try:
                 resp = await self._client.get(
                     url,
@@ -489,9 +497,15 @@ class EPDAdapter(ProviderAdapter):
                     },
                     timeout=10.0,
                 )
+                _log.info(
+                    f"epd.discovery.result q_offset={q_offset} status={resp.status_code} content_len={len(resp.content)} url={url}",
+                )
                 if resp.status_code in (200, 206):
-                    return yyyymm
-            except httpx.HTTPError:
+                    return yyyymmdd
+            except httpx.HTTPError as e:
+                _log.warning(
+                    f"epd.discovery.error q_offset={q_offset} err={e!r} url={url}",
+                )
                 continue
         return None
 

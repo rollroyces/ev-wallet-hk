@@ -1,18 +1,19 @@
 /**
- * Topup screen — Modal screen opened from the Wallet tab.
+ * Topup screen — Modal opened from the Wallet tab.
  *
- * Lets the user pick an amount and pay via:
- *   - Apple Pay (iOS, via `POST /wallet/topup/apple/intent` for merchant
- *     config; PKPaymentToken capture is delegated to expo-apple-pay which
- *     is NOT yet installed — when it lands, swap in the real sheet)
- *   - Google Pay (Android, same caveat)
- *   - Stripe (test mode in dev — confirms via the client_secret and
- *     settles via the webhook)
+ * Three payment methods, each with a fallback when the native module
+ * isn't compiled in (Expo Go or web):
  *
- * The "intent" endpoints return 503 `BackendUnavailableError` if the
- * backend isn't configured (no Apple Pay merchant id, no Stripe key);
- * the UI handles that gracefully by showing a friendly error and letting
- * the user pick another method.
+ *   - Apple Pay (iOS) via expo-apple-pay. PKPaymentToken is generated
+ *     client-side, validated server-side via POST /wallet/topup?source=apple_pay.
+ *   - Google Pay (Android) via expo-google-pay. Same pattern.
+ *   - Credit/debit card via @stripe/stripe-react-native. Server creates a
+ *     PaymentIntent, client confirms with stripe.confirmPayment().
+ *
+ * The screen falls back to a friendly error message if any of the native
+ * modules are missing — that way the screen is testable in Expo Go (where
+ * these libs don't compile) and graceful when an integration isn't yet
+ * configured server-side.
  */
 
 import { useRouter } from "expo-router";
@@ -30,9 +31,83 @@ import {
 } from "react-native";
 import { api } from "../lib/api";
 
+// Lazy-require the native modules so the screen still loads in Expo Go
+// (where these aren't compiled). `require` is wrapped in try/catch so a
+// missing module falls through gracefully.
+function tryRequire<T = unknown>(name: string): T | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return require(name) as T;
+  } catch {
+    return null;
+  }
+}
+
 const PRESET_AMOUNTS = ["100", "200", "500", "1000"]; // HKD
 
 type TopupMethod = "apple_pay" | "google_pay" | "stripe";
+
+interface ApplePayApi {
+  canMakePaymentsAsync?: () => Promise<boolean>;
+  presentApplePayAsync: (opts: {
+    cartItems: Array<{
+      label: string;
+      amount: string;
+      paymentType?: "pending" | "final-on-payment";
+    }>;
+    country: string;
+    currency: string;
+    merchantIdentifier: string;
+    requiredBillingContactFields?: string[];
+    requiredShippingContactFields?: string[];
+  }) => Promise<{ token: unknown; status: number }>;
+}
+
+const ApplePay: ApplePayApi | null = tryRequire<ApplePayApi>("expo-apple-pay");
+
+interface GooglePayApi {
+  GooglePayStatus: { AVAILABLE: number };
+  isReadyToPay: (opts: {
+    apiVersion: number;
+    apiVersionMinor: number;
+    allowedPaymentMethods: Array<{
+      type: string;
+      parameters: Record<string, unknown>;
+    }>;
+    existingPaymentMethodRequired?: boolean;
+  }) => Promise<{ status: number }>;
+  requestPayment: (opts: {
+    apiVersion: number;
+    apiVersionMinor: number;
+    paymentMethodTokenizationParameters: {
+      tokenizationType: string;
+      parameters: Record<string, string>;
+    };
+    allowedPaymentMethods: Array<{
+      type: string;
+      parameters: Record<string, unknown>;
+    }>;
+    transaction: {
+      totalPrice: string;
+      totalPriceStatus: string;
+      currencyCode: string;
+    };
+  }) => Promise<{ paymentMethodToken: { token: string } }>;
+}
+
+const GooglePay = tryRequire<GooglePayApi>("expo-google-pay");
+
+interface StripeApi {
+  initPaymentSheet: (opts: {
+    paymentIntentClientSecret: string;
+    merchantDisplayName?: string;
+  }) => Promise<{ error?: { message?: string } }>;
+  presentPaymentSheet: () => Promise<{ error?: { message?: string } }>;
+}
+
+const Stripe: StripeApi | null =
+  tryRequire<{ default: StripeApi }>("@stripe/stripe-react-native")?.default ??
+  tryRequire<StripeApi>("@stripe/stripe-react-native");
 
 export default function TopupScreen(): React.JSX.Element {
   const router = useRouter();
@@ -45,19 +120,44 @@ export default function TopupScreen(): React.JSX.Element {
 
   const onApplePay = async () => {
     if (!valid) return Alert.alert("Enter an amount first", "Min HK$50, max HK$10,000.");
+    if (!ApplePay) {
+      setResult({
+        kind: "fail",
+        message: "expo-apple-pay native module not compiled. Run `eas build` (or use Stripe in dev).",
+      });
+      return;
+    }
     setSubmitting("apple_pay");
     setResult(null);
     try {
-      await api.createApplePayIntent();
-      // expo-apple-pay integration is not in the MVP. Until it's wired
-      // up, just tell the user what would have happened.
+      const intent = await api.createApplePayIntent();
+      const res = await ApplePay.presentApplePayAsync({
+        cartItems: [
+          {
+            label: `Wallet top-up HK$${amount}`,
+            amount: String(amount),
+            paymentType: "pending",
+          },
+        ],
+        country: "HK",
+        currency: "HKD",
+        merchantIdentifier: intent.merchant_id,
+      });
+      // Hand the PKPaymentToken to the backend for validation + settlement.
+      const settlement = await api.topUp({
+        amount_hkd: amount,
+        source: "apple_pay",
+        source_payload: {
+          pkpayment_token: JSON.stringify(res.token),
+          merchant_id: intent.merchant_id,
+        },
+      });
       setResult({
         kind: "ok",
-        message:
-          "Apple Pay merchant verified. Native PKPaymentToken capture requires expo-apple-pay (not yet installed); use Stripe in the meantime.",
+        message: `Top-up complete. Transaction ${settlement.transaction_id.slice(0, 8)}… (${settlement.amount_hkd} HKD)`,
       });
     } catch (e) {
-      setResult({ kind: "fail", message: String(e instanceof Error ? e.message : e) });
+      setResult({ kind: "fail", message: e instanceof Error ? e.message : String(e) });
     } finally {
       setSubmitting(null);
     }
@@ -65,19 +165,62 @@ export default function TopupScreen(): React.JSX.Element {
 
   const onGooglePay = async () => {
     if (!valid) return Alert.alert("Enter an amount first", "Min HK$50, max HK$10,000.");
+    if (!GooglePay) {
+      setResult({
+        kind: "fail",
+        message: "expo-google-pay native module not compiled. Run `eas build` (or use Stripe in dev).",
+      });
+      return;
+    }
     setSubmitting("google_pay");
     setResult(null);
     try {
-      // Google Pay has no server-side intent; we POST the payload directly
-      // to /wallet/topup once the token is captured. For now, surface that
-      // we don't have expo-google-pay wired in.
+      const ready = await GooglePay.isReadyToPay({
+        apiVersion: 2,
+        apiVersionMinor: 0,
+        allowedPaymentMethods: [
+          {
+            type: "CARD",
+            parameters: { allowedAuthMethods: ["PAN_ONLY", "CRYPTOGRAM_3DS"], allowedCardNetworks: ["VISA", "MASTERCARD"] },
+          },
+        ],
+      });
+      if (ready.status !== GooglePay.GooglePayStatus.AVAILABLE) {
+        setResult({ kind: "fail", message: "Google Pay is not available on this device." });
+        return;
+      }
+      const tokenRes = await GooglePay.requestPayment({
+        apiVersion: 2,
+        apiVersionMinor: 0,
+        paymentMethodTokenizationParameters: {
+          tokenizationType: "PAYMENT_GATEWAY",
+          parameters: { gateway: "example", gatewayMerchantId: "evwallet-merchant" },
+        },
+        allowedPaymentMethods: [
+          {
+            type: "CARD",
+            parameters: { allowedAuthMethods: ["PAN_ONLY", "CRYPTOGRAM_3DS"], allowedCardNetworks: ["VISA", "MASTERCARD"] },
+          },
+        ],
+        transaction: {
+          totalPrice: String(amount),
+          totalPriceStatus: "FINAL",
+          currencyCode: "HKD",
+        },
+      });
+      const settlement = await api.topUp({
+        amount_hkd: amount,
+        source: "google_pay",
+        source_payload: {
+          google_pay_token: tokenRes.paymentMethodToken.token,
+        },
+      });
       setResult({
         kind: "ok",
-        message:
-          "Google Pay requires expo-google-pay (not yet installed); use Stripe in the meantime.",
+        message: `Top-up complete. Transaction ${settlement.transaction_id.slice(0, 8)}… (${settlement.amount_hkd} HKD)`,
       });
     } catch (e) {
-      setResult({ kind: "fail", message: String(e instanceof Error ? e.message : e) });
+      setResult({ kind: "fail", message: e instanceof Error ? e.message : String(e) });
     } finally {
       setSubmitting(null);
     }
@@ -85,21 +228,30 @@ export default function TopupScreen(): React.JSX.Element {
 
   const onStripe = async () => {
     if (!valid) return Alert.alert("Enter an amount first", "Min HK$50, max HK$10,000.");
+    if (!Stripe) {
+      setResult({
+        kind: "fail",
+        message: "@stripe/stripe-react-native native module not compiled. Run `eas build` (or use web topup in dev).",
+      });
+      return;
+    }
     setSubmitting("stripe");
     setResult(null);
     try {
       const intent = await api.createStripeIntent(amount);
-      // The MVP topup screen does NOT yet embed Stripe.js / the native
-      // sheet — that's a follow-up. We surface the intent id so the user
-      // (and dev) can verify the server round-trip works end-to-end.
+      const init = await Stripe.initPaymentSheet({
+        paymentIntentClientSecret: intent.client_secret,
+        merchantDisplayName: "EV Wallet HK",
+      });
+      if (init.error) throw new Error(init.error.message);
+      const present = await Stripe.presentPaymentSheet();
+      if (present.error) throw new Error(present.error.message);
       setResult({
         kind: "ok",
-        message:
-          `Stripe PaymentIntent created (id=${intent.payment_intent_id}). ` +
-          "Client-side card collection needs Stripe.js (web) or stripe-react-native (mobile); wire in next pass.",
+        message: `Payment confirmed for PaymentIntent ${intent.payment_intent_id.slice(-8)}. Wallet credits via webhook.`,
       });
     } catch (e) {
-      setResult({ kind: "fail", message: String(e instanceof Error ? e.message : e) });
+      setResult({ kind: "fail", message: e instanceof Error ? e.message : String(e) });
     } finally {
       setSubmitting(null);
     }
@@ -146,12 +298,30 @@ export default function TopupScreen(): React.JSX.Element {
         <Text style={styles.sectionLabel}>Payment method</Text>
 
         {Platform.OS === "ios" ? (
-          <PayButton label="Apple Pay" note="Recommended on iOS" onPress={onApplePay} loading={submitting === "apple_pay"} />
+          <PayButton
+            label={` Pay`}
+            note={ApplePay ? "Native Apple Pay sheet" : "Native module not compiled (Expo Go?)"}
+            onPress={onApplePay}
+            loading={submitting === "apple_pay"}
+            disabled={!ApplePay}
+          />
         ) : null}
         {Platform.OS === "android" ? (
-          <PayButton label="Google Pay" note="Recommended on Android" onPress={onGooglePay} loading={submitting === "google_pay"} />
+          <PayButton
+            label="G Pay"
+            note={GooglePay ? "Native Google Pay sheet" : "Native module not compiled (Expo Go?)"}
+            onPress={onGooglePay}
+            loading={submitting === "google_pay"}
+            disabled={!GooglePay}
+          />
         ) : null}
-        <PayButton label="Credit / debit card" note="Powered by Stripe" onPress={onStripe} loading={submitting === "stripe"} />
+        <PayButton
+          label="Credit / debit card"
+          note={Stripe ? "Powered by Stripe" : "Native module not compiled (Expo Go?)"}
+          onPress={onStripe}
+          loading={submitting === "stripe"}
+          disabled={!Stripe}
+        />
 
         {result ? (
           <View style={[styles.result, result.kind === "ok" ? styles.resultOk : styles.resultFail]}>
@@ -168,14 +338,19 @@ interface PayButtonProps {
   note?: string;
   onPress: () => void;
   loading?: boolean;
+  disabled?: boolean;
 }
 
-function PayButton({ label, note, onPress, loading }: PayButtonProps): React.JSX.Element {
+function PayButton({ label, note, onPress, loading, disabled }: PayButtonProps): React.JSX.Element {
   return (
     <Pressable
-      style={({ pressed }) => [styles.payBtn, pressed && styles.payBtnPressed]}
+      style={({ pressed }) => [
+        styles.payBtn,
+        pressed && styles.payBtnPressed,
+        disabled && styles.payBtnDisabled,
+      ]}
       onPress={onPress}
-      disabled={loading}
+      disabled={loading || disabled}
       accessibilityRole="button"
       accessibilityLabel={label}
     >
@@ -250,13 +425,10 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   payBtnPressed: { opacity: 0.7 },
+  payBtnDisabled: { opacity: 0.4 },
   payBtnLabel: { color: "#fff", fontWeight: "700", fontSize: 15 },
   payBtnNote: { color: "#94a3b8", fontSize: 12, marginTop: 2 },
-  result: {
-    marginTop: 16,
-    borderRadius: 10,
-    padding: 14,
-  },
+  result: { marginTop: 16, borderRadius: 10, padding: 14 },
   resultOk: { backgroundColor: "#dcfce7" },
   resultFail: { backgroundColor: "#fee2e2" },
   resultText: { color: "#0f172a", fontSize: 13 },

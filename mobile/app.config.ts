@@ -82,6 +82,13 @@ const config: ExpoConfig = {
         resizeMode: "contain",
       },
     ],
+    // Native payment integrations. Both require EAS Build (managed
+    // workflow can't compile these native modules); they won't work in
+    // Expo Go. The mobile/app/topup.tsx screen falls back gracefully if
+    // the modules aren't available.
+    "@stripe/stripe-react-native",
+    "expo-apple-pay",
+    "expo-google-pay",
   ],
   experiments: {
     typedRoutes: true,

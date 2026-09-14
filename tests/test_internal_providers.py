@@ -111,9 +111,11 @@ async def test_epd_adapter_discovers_latest_quarter(monkeypatch):
     adapter = EPDAdapter(http_client=client)
     result = await adapter._discover_latest_quarter()
     assert result is not None
-    # yyyymm format: 6 digits
-    assert len(result) == 6
+    # yyyymmdd format: 8 digits (year + month + day=30)
+    assert len(result) == 8
     assert result.isdigit()
+    # last two chars must be '30' (EPD always publishes at quarter-end)
+    assert result.endswith("30")
 
 
 # ---------------------------------------------------------------------------

@@ -7,11 +7,13 @@
  * - Tap a marker -> opens a Station detail modal/sheet.
  */
 
+import * as Location from "expo-location";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Modal,
   Platform,
   Pressable,
@@ -25,7 +27,8 @@ import { api } from "../../lib/api";
 import type { Station } from "../../lib/types";
 import { StationCard } from "../../components/StationCard";
 
-// HK Central as a sensible default; replace with expo-location for real GPS.
+// HK Central as a sensible default; replaced by real GPS when the user
+// grants location permission (see the effect below).
 const DEFAULT_REGION: Region = {
   latitude: 22.302711,
   longitude: 114.177216,
@@ -33,10 +36,75 @@ const DEFAULT_REGION: Region = {
   longitudeDelta: 0.08,
 };
 
+// HK bounds — used as a sanity check on the GPS reading (sometimes the
+// emulator returns a default coordinate in California). If the fix is
+// outside this box, treat the read as untrusted and fall back.
+const HK_BBOX = {
+  minLat: 22.15,
+  maxLat: 22.55,
+  minLng: 113.85,
+  maxLng: 114.45,
+};
+
+function isInHKBbox(lat: number, lng: number): boolean {
+  return (
+    lat >= HK_BBOX.minLat &&
+    lat <= HK_BBOX.maxLat &&
+    lng >= HK_BBOX.minLng &&
+    lng <= HK_BBOX.maxLng
+  );
+}
+
 export default function MapScreen(): React.JSX.Element {
   const router = useRouter();
+  const mapRef = useRef<MapView | null>(null);
   const [region, setRegion] = useState<Region>(DEFAULT_REGION);
   const [selected, setSelected] = useState<Station | null>(null);
+  const [locating, setLocating] = useState(false);
+  const [locStatus, setLocStatus] = useState<"unknown" | "granted" | "denied">("unknown");
+
+  // Ask for location permission on mount (background: false is enough for
+  // a "show me nearby" feature). If granted, pan to the user's current fix.
+  // Implemented as a manual handler rather than useEffect so the user can
+  // also tap the toolbar button to retry.
+  const locateMe = async () => {
+    setLocating(true);
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== "granted") {
+        setLocStatus("denied");
+        Alert.alert(
+          "Location access denied",
+          "EV Wallet can still show you HK-wide stations; grant location in Settings for nearby results.",
+        );
+        return;
+      }
+      setLocStatus("granted");
+      const fix = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+      const { latitude, longitude } = fix.coords;
+      if (!isInHKBbox(latitude, longitude)) {
+        Alert.alert(
+          "GPS returned an out-of-HK fix",
+          "Using HK Central as the default. (Are you on a simulator with default Mountain View?)",
+        );
+        return;
+      }
+      const next: Region = {
+        latitude,
+        longitude,
+        latitudeDelta: 0.08,
+        longitudeDelta: 0.08,
+      };
+      setRegion(next);
+      mapRef.current?.animateToRegion(next, 600);
+    } catch (e) {
+      Alert.alert("Couldn't get location", e instanceof Error ? e.message : String(e));
+    } finally {
+      setLocating(false);
+    }
+  };
 
   const stationsQuery = useQuery({
     queryKey: [
@@ -59,6 +127,7 @@ export default function MapScreen(): React.JSX.Element {
   return (
     <View style={styles.container}>
       <MapView
+        ref={mapRef}
         style={styles.map}
         provider={Platform.OS === "android" ? PROVIDER_GOOGLE : undefined}
         initialRegion={DEFAULT_REGION}
@@ -82,11 +151,24 @@ export default function MapScreen(): React.JSX.Element {
 
       <View style={styles.toolbar}>
         <Pressable
-          style={styles.scanBtn}
+          style={[styles.toolbarBtn, locStatus === "granted" && styles.toolbarBtnActive]}
+          onPress={() => void locateMe()}
+          disabled={locating}
+          accessibilityRole="button"
+          accessibilityLabel="Use my location"
+        >
+          {locating ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text style={styles.toolbarBtnText}>📍 My location</Text>
+          )}
+        </Pressable>
+        <Pressable
+          style={[styles.toolbarBtn, styles.scanBtn]}
           onPress={() => router.push("/scan")}
           accessibilityRole="button"
         >
-          <Text style={styles.scanBtnText}>📷 Scan QR</Text>
+          <Text style={styles.toolbarBtnText}>📷 Scan QR</Text>
         </Pressable>
       </View>
 
@@ -163,8 +245,9 @@ const styles = StyleSheet.create({
     position: "absolute",
     top: 16,
     right: 16,
+    gap: 8,
   },
-  scanBtn: {
+  toolbarBtn: {
     backgroundColor: "#0f172a",
     paddingHorizontal: 16,
     paddingVertical: 12,
@@ -174,10 +257,16 @@ const styles = StyleSheet.create({
     shadowRadius: 6,
     elevation: 4,
   },
-  scanBtnText: {
+  toolbarBtnActive: {
+    backgroundColor: "#22d3ee",
+  },
+  toolbarBtnText: {
     color: "#fff",
     fontWeight: "700",
     fontSize: 14,
+  },
+  scanBtn: {
+    // kept as a styling hook so the layout above reads naturally.
   },
   loadingOverlay: {
     position: "absolute",

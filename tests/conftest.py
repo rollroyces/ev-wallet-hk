@@ -306,6 +306,7 @@ async def app_client(test_db_url, fake_redis, monkeypatch):
 
     from evwallet.charging.router import build_router as build_charging
     from evwallet.errors import IDPError
+    from evwallet.payments.router import build_router as build_payments
     from evwallet.stations.router import build_router as build_stations
     from evwallet.wallet.router import build_router as build_wallet
 
@@ -327,6 +328,7 @@ async def app_client(test_db_url, fake_redis, monkeypatch):
     app.include_router(build_charging(), prefix="/api/v1")
     app.include_router(build_stations(), prefix="/api/v1")
     app.include_router(build_wallet(), prefix="/api/v1")
+    app.include_router(build_payments(), prefix="/api/v1")
     app.state.redis = fake_redis
 
     engine = create_async_engine(test_db_url, future=True)

@@ -329,6 +329,13 @@ def create_app() -> FastAPI:
 
     app.include_router(_build_internal_router(), prefix="/api/v1")
 
+    # Payments (Stripe webhook + Apple/Google Pay topup settlement)
+    # Agent D wired the real handler in src/evwallet/payments/router.py;
+    # this is the missing include_router that Agent D intentionally skipped.
+    from evwallet.payments.router import build_router as _build_payments_router
+
+    app.include_router(_build_payments_router(), prefix="/api/v1")
+
     # --- Health / readiness / version / metrics -----------------------
 
     @app.get("/healthz", include_in_schema=False)

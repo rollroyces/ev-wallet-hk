@@ -349,4 +349,13 @@ def _handle_payment_intent_canceled(event: dict[str, Any]) -> None:
 _ = (Response,)
 
 
-__all__ = ["router"]
+def build_router() -> APIRouter:
+    """Return the payments router (already constructed at module load).
+
+    Factory function matching the pattern used by other routers so
+    ``main.create_app`` can include it via a uniform call site.
+    """
+    return router
+
+
+__all__ = ["build_router", "router"]

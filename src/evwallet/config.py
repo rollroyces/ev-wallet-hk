@@ -143,6 +143,12 @@ class Settings(BaseSettings):
     smtp_password: str | None = None
     smtp_from: str | None = None
     smtp_tls: str = "starttls"  # "starttls" | "ssl" | "none"
+
+    # Open Charge Map API key. Register for free at
+    # https://openchargemap.org → my profile → my apps → Register An
+    # Application. Free tier is ~10 req/min. Set this to enable the
+    # OCMAdapter in addition to the EPD quarterly XLSX feed.
+    ocm_api_key: str | None = None
     apple_pay_merchant_id: str | None = None
     google_pay_merchant_id: str | None = None
     # Apple Sign-In bundle id — the value the Apple JWT 'aud' claim must

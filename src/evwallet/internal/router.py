@@ -32,7 +32,10 @@ from ..db.models import (
     WalletTransaction,
 )
 from ..db.session import get_db
-from .providers import ADAPTERS, ProviderUnavailable
+from .providers import (
+    ADAPTERS,
+    ProviderUnavailable,
+)
 from .schemas import StationUpsertIn, StationUpsertOut
 
 # ---------------------------------------------------------------------------

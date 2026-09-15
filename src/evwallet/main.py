@@ -346,6 +346,21 @@ def create_app() -> FastAPI:
 
     app.include_router(_build_payments_router(), prefix="/api/v1")
 
+    # --- Public provider-availability endpoint -------------------------
+    # No auth required — used by the web "Coverage" card to show users
+    # which networks are live vs. need-config vs. coming-soon. Pure
+    # read of env + registry; no I/O.
+    from evwallet.internal.providers import get_provider_availability
+
+    @app.get(
+        "/api/v1/providers/availability",
+        response_model=list[dict],
+        tags=["public"],
+        summary="Public: which charging networks are covered, with status",
+    )
+    async def get_providers_availability() -> list[dict]:
+        return get_provider_availability()
+
     # --- Health / readiness / version / metrics -----------------------
 
     @app.get("/healthz", include_in_schema=False)

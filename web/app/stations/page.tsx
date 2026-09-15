@@ -1,8 +1,9 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getApiClient, getCookieHeader, ApiError } from '@/lib/api';
-import type { Station, StationProviderCode, ConnectorType } from '@/lib/types';
+import type { Station, StationProviderCode, ConnectorType, ProviderAvailability } from '@/lib/types';
 import { Nav } from '@/components/nav';
+import { ProviderCoverage } from '@/components/provider-coverage';
 import { StationsSearch } from './stations-search';
 
 export const dynamic = 'force-dynamic';
@@ -22,6 +23,7 @@ export default async function StationsPage({
   let user: { display_name: string; is_admin: boolean };
   let stations: Station[] = [];
   let total = 0;
+  let providers: ProviderAvailability[] = [];
 
   try {
     const me = await api.me();
@@ -40,6 +42,19 @@ export default async function StationsPage({
     });
     stations = result.stations;
     total = result.total;
+    // Fetch the coverage map too. This is a public endpoint, so
+    // failure is non-fatal (the page still works without the card).
+    try {
+      const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://127.0.0.1:8001';
+      const cov = await fetch(`${apiBase}/api/v1/providers/availability`, {
+        cache: 'no-store',
+      });
+      if (cov.ok) {
+        providers = (await cov.json()) as ProviderAvailability[];
+      }
+    } catch {
+      // network blip — coverage card simply won't render
+    }
   } catch (e) {
     if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
       redirect('/login');
@@ -65,6 +80,7 @@ export default async function StationsPage({
       <main style={{ maxWidth: 1100, margin: '0 auto', padding: '1.5rem 1rem' }}>
         <h1>Stations</h1>
         <p className="muted">{total} total · showing {filtered.length}</p>
+        <ProviderCoverage providers={providers} />
         <StationsSearch initialQ={params.q ?? ''} initialConnector={params.connector ?? ''} initialMinKw={params.min_kw ?? ''} />
         <table className="card" style={{ width: '100%', borderCollapse: 'collapse', marginTop: '1rem' }}>
           <thead>

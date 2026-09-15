@@ -109,6 +109,7 @@ export type StationProviderCode =
   | "shell"
   | "tesla"
   | "epd"
+  | "ocm"
   | "unknown";
 
 export interface Station {

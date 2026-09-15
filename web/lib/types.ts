@@ -107,6 +107,7 @@ export type StationProviderCode =
   | "shell"
   | "tesla"
   | "epd"
+  | "ocm"
   | "unknown";
 
 export interface Station {
@@ -334,4 +335,21 @@ export interface Paginated<T> {
   items: T[];
   next_cursor: string | null;
   total?: number;
+}
+
+
+// ---------------------------------------------------------------------------
+// Provider coverage (GET /api/v1/providers/availability)
+// ---------------------------------------------------------------------------
+
+export type ProviderStatus = "live" | "needs_config" | "coming_soon";
+
+export interface ProviderAvailability {
+  code: StationProviderCode | "unknown";
+  name: string;
+  blurb: string;
+  env_var: string;
+  status: ProviderStatus;
+  contact_email: string | null;
+  setup_url: string | null;
 }

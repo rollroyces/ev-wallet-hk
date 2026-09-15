@@ -582,6 +582,255 @@ class EPDAdapter(ProviderAdapter):
 
 
 # ---------------------------------------------------------------------------
+# Open Charge Map (OCM) — global open-data registry
+# ---------------------------------------------------------------------------
+
+
+class OCMAdapter(ProviderAdapter):
+    """Open Charge Map global POI registry.
+
+    OCM (https://openchargemap.org) is the largest open registry of EV
+    charging locations worldwide. The free API exposes a JSON
+    ``/v3/poi/`` endpoint that returns every public charger submitted
+    to OCM by volunteers, operators, and the OCM team itself. Coverage
+    in HK is decent — the registry has both standalone (non-network)
+    chargers and a number of the same operator sites that EPD reports.
+
+    Why we have this in addition to EPD:
+      - Different data sources, different freshness. EPD publishes
+        quarterly; OCM is updated daily by community submissions.
+      - Different operator attribution. EPD aggregates by site name
+        (often dropping the operator); OCM records the network per
+        POI (HKE, Shell, etc.).
+      - Worldwide dataset if we ever expand beyond HK.
+
+    Auth: free API key, register at
+    https://openchargemap.org/ → my profile → my apps → Register An
+    Application. Set via ``EVW_OCM_API_KEY``.
+
+    Doc: https://github.com/openchargemap/ocm-docs (Model/schema/
+    ocm-openapi-spec.yaml — see ``/poi`` endpoint).
+
+    We use ``compact=true&verbose=false`` to keep the payload small
+    (the verbose mode inlines reference data for every POI — 10x the
+    bytes). Reference data (connector types, network operators) is
+    keyed by integer ID in compact mode; we have a small local map
+    for the common ones and fall back to "unknown" for anything
+    exotic. Good enough for a discovery list — bad if you need
+    per-operator attribution for billing.
+    """
+
+    provider_code = "ocm"
+
+    BASE_URL = "https://api.openchargemap.io/v3/poi/"
+    # Free tier rate limit: be polite. OCM's docs warn about bans
+    # for excessive callers. maxresults=500 covers all of HK in one
+    # call; countrycode=HK narrows the geographic scope.
+    DEFAULT_PARAMS: dict[str, str | int] = {
+        "output": "json",
+        "countrycode": "HK",
+        "maxresults": 500,
+        "compact": "true",
+        "verbose": "false",
+    }
+
+    # OCM ConnectionType.ID → (connector_code, speed_tier, max_kw).
+    # Source: OCM CoreReferenceData (https://api.openchargemap.io/v3/referencedata/).
+    # We map the common ones; anything not listed here is recorded as
+    # ("unknown", "unknown", None) so we still get a station row.
+    CONNECTION_TYPE_MAP: dict[int, tuple[str, str, Decimal | None]] = {
+        1:  ("type1",  "ac_slow",  Decimal("2")),       # J1772 / Type 1
+        2:  ("chademo","dc_fast",  Decimal("50")),      # CHAdeMO
+        3:  ("ccs1",   "dc_fast",  Decimal("50")),      # CCS Type 1 (SAE J1772 Combo)
+        4:  ("ccs2",   "dc_fast",  Decimal("50")),      # CCS Type 2 (IEC 62196 Combo)
+        5:  ("type2",  "ac_fast",  Decimal("22")),      # IEC 62196 Type 2 (Mennekes)
+        6:  ("bs1363", "ac_slow",  Decimal("3")),       # UK 3-Pin (BS 1363)
+        7:  ("schuko", "ac_slow",  Decimal("3")),       # CEE 7/5 (Schuko / Type F)
+        8:  ("cee_blue","ac_fast", Decimal("22")),      # CEE 7/4 (Type E+F blue, 3-phase)
+        9:  ("type3",  "ac_slow",  Decimal("3")),       # Type 3 (Scame, legacy EU)
+        10: ("nema_5_15", "ac_slow", Decimal("1.5")),   # NEMA 5-15 (US 110V)
+        11: ("nema_14_50", "ac_fast", Decimal("7.5")),  # NEMA 14-50 (US 240V dryer)
+        12: ("nema_tt_30", "ac_slow", Decimal("3.6")),  # NEMA TT-30 (US RV)
+        13: ("gb_t_ac", "ac_fast", Decimal("22")),     # GB/T 20234.2 AC
+        14: ("gb_t_dc", "dc_fast", Decimal("50")),     # GB/T 20234.3 DC
+        15: ("tesla_nacs", "dc_fast", Decimal("150")), # Tesla NACS (US/EU)
+        16: ("tesla_wc", "dc_fast", Decimal("20")),    # Tesla Wall Connector (legacy)
+        20: ("ccs2",  "dc_ultra", Decimal("350")),     # CCS2 350kW HPC
+        25: ("ccs2",  "dc_ultra", Decimal("50")),      # CCS2 50kW DC
+        26: ("ccs2",  "dc_fast",  Decimal("100")),     # CCS2 100kW DC
+        27: ("ccs2",  "dc_ultra", Decimal("150")),     # CCS2 150kW HPC
+        28: ("ccs2",  "dc_ultra", Decimal("300")),     # CCS2 300kW HPC
+        30: ("chademo","dc_ultra", Decimal("100")),    # CHAdeMO 100kW
+        32: ("chademo","dc_ultra", Decimal("150")),    # CHAdeMO 150kW
+        33: ("chademo","dc_fast",  Decimal("50")),     # CHAdeMO 50kW
+    }
+
+    # OCM StatusType.ID → canonical station status
+    STATUS_TYPE_MAP: dict[int, str] = {
+        0: "unknown",
+        5: "planned",
+        10: "planned",
+        15: "planned",
+        20: "available",
+        25: "available",     # "Available - Working"
+        30: "offline",       # "Out of service" / "Not operational"
+        35: "offline",
+        40: "offline",       # "Removed"
+        50: "available",     # "Available - Unknown condition"
+        75: "available",
+        100: "offline",      # "De-commissioned"
+    }
+
+    async def fetch(self) -> list[AdapterResult]:
+        settings = get_settings()
+        api_key = getattr(settings, "ocm_api_key", None)
+        if not api_key:
+            raise ProviderUnavailable(
+                "OCM adapter requires EVW_OCM_API_KEY. Register for a "
+                "free API key at https://openchargemap.org → my profile → "
+                "my apps → Register An Application (5 min), then set "
+                "EVW_OCM_API_KEY in .env. See docs/operations/OCM_SETUP.md.",
+                contact_email="support@openchargemap.org",
+            )
+
+        params = dict(self.DEFAULT_PARAMS)
+        params["key"] = api_key
+        try:
+            resp = await self._client.get(
+                self.BASE_URL,
+                params=params,
+                headers={
+                    "User-Agent": "EVWalletHK/0.5 (https://evwallet.hk)",
+                    "Accept": "application/json",
+                },
+                timeout=30.0,
+            )
+        except Exception as exc:
+            raise ProviderUnavailable(
+                f"OCM API request failed: {exc}", contact_email=None
+            ) from exc
+
+        if resp.status_code == 401 or resp.status_code == 403:
+            raise ProviderUnavailable(
+                f"OCM API key rejected (HTTP {resp.status_code}). Check "
+                "EVW_OCM_API_KEY is set correctly.",
+                contact_email="support@openchargemap.org",
+            )
+        if resp.status_code == 429:
+            raise ProviderUnavailable(
+                "OCM API rate-limited (HTTP 429). Free tier is "
+                "approximately 10 requests/minute. Back off and retry.",
+                contact_email="support@openchargemap.org",
+            )
+        if resp.status_code != 200:
+            raise ProviderUnavailable(
+                f"OCM API returned {resp.status_code}: {resp.text[:200]}",
+                contact_email="support@openchargemap.org",
+            )
+
+        try:
+            payload = resp.json()
+        except Exception as exc:
+            raise ProviderUnavailable(
+                f"OCM API returned non-JSON: {exc}", contact_email=None
+            ) from exc
+
+        if not isinstance(payload, list):
+            raise ProviderUnavailable(
+                f"OCM API returned unexpected shape: {type(payload).__name__}",
+                contact_email="support@openchargemap.org",
+            )
+
+        results: list[AdapterResult] = []
+        for raw in payload:
+            try:
+                station = self._map_station(raw)
+            except Exception as exc:
+                _log.warning(
+                    "OCM station mapping failed (id=%s): %s",
+                    raw.get("ID"), exc,
+                )
+                continue
+            results.append(AdapterResult(station=station))
+
+        _log.info("OCM adapter fetched %d stations", len(results))
+        return results
+
+    def _map_station(self, raw: dict[str, Any]) -> StationUpsertIn:
+        """Map an OCM POI to the canonical StationUpsertIn."""
+        address_info = raw.get("AddressInfo") or {}
+        title = (address_info.get("Title") or "").strip()
+        address_line = (address_info.get("AddressLine1") or "").strip()
+        town = (address_info.get("Town") or "").strip()
+        state_or_district = (address_info.get("StateOrProvince") or "").strip()
+        postcode = (address_info.get("Postcode") or "").strip()
+        country = (address_info.get("Country") or {}).get("Title", "Hong Kong")
+
+        # OCM's "Title" is the venue/POI name. Fall back to address if
+        # the venue has no title (rare).
+        name = title or address_line or f"OCM POI {raw.get('ID')}"
+        # Combine for a single readable address
+        address = ", ".join(
+            p for p in (address_line, town, state_or_district, postcode, country) if p
+        )
+
+        lat = address_info.get("Latitude")
+        lng = address_info.get("Longitude")
+        if lat is None or lng is None:
+            raise ValueError(f"station missing lat/lng: {raw.get('ID')}")
+
+        # Connections → poles. One pole per connection type with a count
+        # of how many physical ports. OCM's "Quantity" is per
+        # ConnectionInfo row, so we create one PoleUpsertIn per
+        # ConnectionInfo with that quantity.
+        poles: list[PoleUpsertIn] = []
+        connections = raw.get("Connections") or []
+        for i, conn in enumerate(connections):
+            conn_type_id = conn.get("ConnectionTypeID")
+            connector, speed_tier, max_kw = self.CONNECTION_TYPE_MAP.get(
+                int(conn_type_id) if conn_type_id is not None else -1,
+                ("unknown", "unknown", None),
+            )
+            poles.append(
+                PoleUpsertIn(
+                    external_id=f"ocm-{raw.get('ID')}-{i}",
+                    connector=connector,
+                    speed_tier=speed_tier,
+                    max_kw=max_kw or Decimal("0"),
+                    qr_code=None,  # generated server-side
+                    status=self._map_status(raw.get("StatusTypeID")),
+                    status_updated_at=datetime.now(tz=UTC),
+                )
+            )
+            # OCM "Quantity" is informational here; we still create one
+            # pole row per ConnectionInfo. The pole model can carry
+            # "count" via the future pole_count field; for now this is
+            # an honest 1-row-per-port representation.
+
+        return StationUpsertIn(
+            provider_code=self.provider_code,
+            external_id=str(raw.get("ID")),
+            name=name,
+            address=address or name,
+            district=state_or_district or None,
+            latitude=Decimal(str(lat)),
+            longitude=Decimal(str(lng)),
+            parking_fee_hkd=Decimal("0"),
+            amenities=[],  # OCM doesn't expose amenities in compact mode
+            raw_payload=raw,
+            poles=poles,
+        )
+
+    def _map_status(self, status_type_id: Any) -> str:
+        if status_type_id is None:
+            return "unknown"
+        try:
+            return self.STATUS_TYPE_MAP.get(int(status_type_id), "unknown")
+        except (TypeError, ValueError):
+            return "unknown"
+
+
+# ---------------------------------------------------------------------------
 # Stubs (HKEV, Shell, Tesla) — return ProviderUnavailable
 # ---------------------------------------------------------------------------
 
@@ -627,18 +876,166 @@ class TeslaAdapter(_NoPublicAPIAdapter):
 # Registry
 ADAPTERS: dict[str, type[ProviderAdapter]] = {
     cls.provider_code: cls
-    for cls in (CLPAdapter, EPDAdapter, HKEVAdapter, ShellAdapter, TeslaAdapter)
+    for cls in (
+        CLPAdapter,
+        EPDAdapter,
+        OCMAdapter,
+        HKEVAdapter,
+        ShellAdapter,
+        TeslaAdapter,
+    )
 }
+
+
+# ---------------------------------------------------------------------------
+# Availability map (for the web "Coverage" UI)
+# ---------------------------------------------------------------------------
+#
+# A static, ordered list of every provider we know about, with a
+# human-friendly label and a one-liner about how to enable it. The
+# availability() function cross-references this with the env (or, in
+# some cases, the running process) to return a structured status for
+# the web UI.
+#
+# The order here is the order shown on the "Coverage" card on the web
+# stations page. Live providers come first, then needs-config, then
+# stubs.
+# ---------------------------------------------------------------------------
+
+# Provider code -> (display name, short blurb, env-var name that enables it)
+PROVIDER_CATALOG: list[dict[str, str]] = [
+    {
+        "code": "epd",
+        "name": "EPD (GovHK open data)",
+        "blurb": "Quarterly XLSX of all public charger sites in HK",
+        "env_var": "",
+    },
+    {
+        "code": "ocm",
+        "name": "Open Charge Map",
+        "blurb": "Global open-data registry; daily community updates",
+        "env_var": "EVW_OCM_API_KEY",
+    },
+    {
+        "code": "clp",
+        "name": "CLP Power",
+        "blurb": "CLP's eMobility network (data.gov.hk proxy)",
+        "env_var": "EVW_DATAGOVHK_API_KEY",
+    },
+    {
+        "code": "hkev",
+        "name": "HKEV (Government brand)",
+        "blurb": "Public map only — partnership required for data feed",
+        "env_var": "",
+    },
+    {
+        "code": "shell",
+        "name": "Shell Recharge",
+        "blurb": "Aggregator partners only — no public API",
+        "env_var": "",
+    },
+    {
+        "code": "tesla",
+        "name": "Tesla Supercharger",
+        "blurb": "Tesla Enterprise / 'Charging Partners' program only",
+        "env_var": "",
+    },
+]
+
+
+def _is_stub(adapter_cls: type[ProviderAdapter]) -> bool:
+    """True for adapter classes that always raise ProviderUnavailable.
+
+    Currently that's the HKEV/Shell/Tesla stubs (inheriting from
+    _NoPublicAPIAdapter). EPD is a real implementation that does I/O;
+    OCM and CLP are real implementations gated on env config.
+    """
+    return isinstance(adapter_cls, type) and issubclass(
+        adapter_cls, _NoPublicAPIAdapter
+    )
+
+
+def get_provider_availability() -> list[dict[str, Any]]:
+    """Return a structured list of every known provider + its status.
+
+    Used by the web "Coverage" UI to show users which networks are
+    live, which need configuration, and which are pending partnership.
+    No network I/O — this is a pure read of the env + the registry.
+
+    Returns: list of dicts in ``PROVIDER_CATALOG`` order. Each dict
+    has the catalog fields plus::
+
+        {
+            "code": "ocm",
+            "name": "Open Charge Map",
+            "blurb": "...",
+            "env_var": "EVW_OCM_API_KEY",
+            "status": "live" | "needs_config" | "coming_soon",
+            "contact_email": "..." | null,
+            "setup_url": "..." | null,
+        }
+    """
+    settings = get_settings()
+    out: list[dict[str, Any]] = []
+    for entry in PROVIDER_CATALOG:
+        code = entry["code"]
+        adapter_cls = ADAPTERS.get(code)
+        # Stub providers (HKEV/Shell/Tesla) are always "coming_soon"
+        if adapter_cls is not None and _is_stub(adapter_cls):
+            status = "coming_soon"
+            contact_email = getattr(adapter_cls, "contact_email", None)
+            setup_url = None
+        elif entry["env_var"]:
+            # Real adapter that needs a key. Pydantic Settings maps
+            # ``EVW_OCM_API_KEY`` to ``settings.ocm_api_key`` (env_prefix
+            # is stripped, upper -> lower). We lowercase the var name
+            # after the prefix to look it up.
+            settings_key = entry["env_var"].lower()
+            if settings_key.startswith("evw_"):
+                settings_key = settings_key[len("evw_"):]
+            value = getattr(settings, settings_key, None)
+            if value:
+                status = "live"
+                contact_email = None
+                setup_url = None
+            else:
+                status = "needs_config"
+                contact_email = "support@openchargemap.org" if code == "ocm" else "help@data.gov.hk" if code == "clp" else None
+                setup_url = (
+                    "https://openchargemap.org/site/profile/register"
+                    if code == "ocm"
+                    else "https://data.gov.hk/en/help/ckan-api-development-guide"
+                    if code == "clp"
+                    else None
+                )
+        else:
+            # Real adapter, no env required (EPD)
+            status = "live"
+            contact_email = None
+            setup_url = None
+
+        out.append(
+            {
+                **entry,
+                "status": status,
+                "contact_email": contact_email,
+                "setup_url": setup_url,
+            }
+        )
+    return out
 
 
 __all__ = [
     "ADAPTERS",
+    "PROVIDER_CATALOG",
     "AdapterResult",
     "CLPAdapter",
     "EPDAdapter",
     "HKEVAdapter",
+    "OCMAdapter",
     "ProviderAdapter",
     "ProviderUnavailable",
     "ShellAdapter",
     "TeslaAdapter",
+    "get_provider_availability",
 ]

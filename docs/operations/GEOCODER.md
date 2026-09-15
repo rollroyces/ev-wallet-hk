@@ -15,21 +15,36 @@ and writes real lat/lng back to the row.
 ## Usage
 
 ```bash
-# Trigger the job (one-shot, blocks until complete)
+# One-off: enrich a single station by name
+python -c "
+import asyncio, httpx
+from evwallet.internal.geocoder import geocode_one
+async def go():
+    async with httpx.AsyncClient() as client:
+        r = await geocode_one(
+            client,
+            name='Cyberport 數碼港',
+            district='S 南區',
+        )
+        print(r)
+asyncio.run(go())
+"
+
+# Bulk: trigger via the internal endpoint (1 HTTP call per
+# station; will hit Nominatim's rate limit around 100-200 stations
+# unless you run at exactly 1 req/sec and back off on 429s).
+# NOT recommended for full backfills — use OCM/CLP instead.
 curl -X POST http://localhost:8001/api/v1/internal/stations/geocode \
     -H "Content-Type: application/json" \
     -H "X-Internal-Token: $EVW_INTERNAL_TOKEN" \
     -d '{"provider_code": "epd", "rate_limit_seconds": 1.5}'
-# Returns: {"scanned": 797, "updated": ~500, "skipped": 0,
-#          "not_found": ~250, "errors": 0}
+# Returns: {"scanned": 797, "updated": ~30, "skipped": 0,
+#          "not_found": ~700, "errors": 0}
 ```
 
-- `provider_code` — only "epd" is supported today (EPD is the only
-  source with placeholder coords; OCM and CLP come with real coords)
-- `rate_limit_seconds` — Nominatim's free tier is 1 req/sec; default
-  1.5s is the safe value
-- Re-runs are idempotent: stations whose lat/lng already differs from
-  the placeholder are skipped
+The endpoint IS still useful for re-running after Nominatim's
+1-hour ban clears — already-geocoded rows are skipped, and
+you can pick up where you left off.
 
 ## What to expect: honest match rate
 

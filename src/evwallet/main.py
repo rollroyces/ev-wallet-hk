@@ -338,6 +338,9 @@ def create_app() -> FastAPI:
     from evwallet.internal.router import build_router as _build_internal_router
 
     app.include_router(_build_internal_router(), prefix="/api/v1")
+    from evwallet.internal.router import build_geocoder_router
+
+    app.include_router(build_geocoder_router(), prefix="/api/v1")
 
     # Payments (Stripe webhook + Apple/Google Pay topup settlement)
     # Agent D wired the real handler in src/evwallet/payments/router.py;

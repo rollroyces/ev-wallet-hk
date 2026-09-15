@@ -18,6 +18,7 @@ from typing import Annotated
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -440,4 +441,67 @@ def build_router() -> APIRouter:
     return router
 
 
-__all__ = ["build_router", "require_internal_token"]
+# ---------------------------------------------------------------------------
+# One-shot geocoder (separate router so the operator can run it on demand)
+# ---------------------------------------------------------------------------
+
+
+def build_geocoder_router() -> APIRouter:
+    """Internal endpoint to backfill lat/lng for EPD-sourced stations.
+
+    The EPD quarterly XLSX gives building name + district but not
+    per-station coordinates — every row has the same placeholder
+    lat/lng. This endpoint walks every EPD station, calls
+    Nominatim (OpenStreetMap, free, no API key) to look up the
+    real address, and updates the row.
+
+    Usage:
+        POST /api/v1/internal/stations/geocode
+        Body: {"provider_code": "epd", "rate_limit_seconds": 1.1}
+
+    Honors Nominatim's 1 req/sec usage policy. With 800 stations it
+    takes ~15 minutes. Safe to re-run — already-geocoded rows are
+    skipped (their lat/lng differs from the placeholder).
+    """
+    from .geocoder import geocode_all
+
+    router = APIRouter(prefix="/internal", tags=["internal-geocoder"])
+
+    @router.post(
+        "/stations/geocode",
+        response_model=GeocodeResponse,
+        dependencies=[Depends(require_internal_token)],
+    )
+    async def post_geocode(
+        payload: GeocodeRequest,
+        db: Annotated[AsyncSession, Depends(get_db)],
+    ) -> GeocodeResponse:
+        result = await geocode_all(
+            db,
+            provider_code=payload.provider_code,
+            only_unset=payload.only_unset,
+            rate_limit_seconds=payload.rate_limit_seconds,
+        )
+        return GeocodeResponse(**result)
+
+    return router
+
+
+# GeocodeRequest/Response live at module scope because Pydantic v2 has
+# trouble resolving forward refs when they're defined inside a
+# function. Keep them simple — one float, a couple of ints, no nesting.
+class GeocodeRequest(BaseModel):
+    provider_code: str = "epd"
+    rate_limit_seconds: float = 1.1
+    only_unset: bool = True
+
+
+class GeocodeResponse(BaseModel):
+    scanned: int
+    updated: int
+    skipped: int
+    not_found: int
+    errors: int
+
+
+__all__ = ["build_geocoder_router", "build_router", "require_internal_token"]

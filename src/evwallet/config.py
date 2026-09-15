@@ -110,6 +110,39 @@ class Settings(BaseSettings):
     # any password, auto-creates the user, and returns a session. Never
     # set this to True in production.
     dev_login: bool = False
+
+    # Rate limiting for /auth/login and /auth/register. Set to 0 to
+    # disable (kill-switch). Defaults are intentionally strict:
+    # 5 login attempts per 15 min per IP, 3 signups per hour per IP.
+    # In dev / CI you may want to raise these.
+    rate_limit_login: int = 5
+    rate_limit_login_window_s: int = 900  # 15 minutes
+    rate_limit_register: int = 3
+    rate_limit_register_window_s: int = 3600  # 1 hour
+    # Verification: 10 attempts / 15 min / IP. Higher than login
+    # because the user may fat-finger a 6-digit code; we still
+    # rate-limit to prevent code brute force (the row lockout in
+    # redeem_code is the backstop).
+    rate_limit_verify: int = 10
+    rate_limit_verify_window_s: int = 900  # 15 minutes
+    # Resend: 3 / hour / IP. Generous because a user might need a
+    # fresh code after a few wrong tries, but capped to prevent
+    # spamming a single email address.
+    rate_limit_resend: int = 3
+    rate_limit_resend_window_s: int = 3600  # 1 hour
+
+    # SMTP for outbound email (verification codes, receipts). If
+    # ``smtp_host`` and ``smtp_from`` are unset, the email sender
+    # falls back to a console logger (verification codes are printed
+    # to stderr) — fine for dev, useless for production. The
+    # smtp_password is read from the host's secret store, NOT from
+    # the env, in production (see docs/PRODUCTION.md).
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from: str | None = None
+    smtp_tls: str = "starttls"  # "starttls" | "ssl" | "none"
     apple_pay_merchant_id: str | None = None
     google_pay_merchant_id: str | None = None
     # Apple Sign-In bundle id — the value the Apple JWT 'aud' claim must

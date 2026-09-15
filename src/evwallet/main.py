@@ -38,7 +38,7 @@ from evwallet.auth.jwt import decode_jwt
 from evwallet.auth.router import router as auth_router
 from evwallet.config import get_settings, settings_as_dict
 from evwallet.db.session import dispose_engine, healthcheck_db
-from evwallet.errors import BackendUnavailableError, IDPError
+from evwallet.errors import BackendUnavailableError, IDPError, RateLimitedError
 from evwallet.logging import configure as configure_logging
 from evwallet.metrics import metrics
 
@@ -147,7 +147,9 @@ def _idp_error_handler(request: Request, exc: IDPError) -> JSONResponse:
     """Map an :class:`IDPError` to its canonical JSON envelope.
 
     The HTTP status comes from ``exc.status`` (default 400; each
-    subclass sets its own).
+    subclass sets its own). For ``RateLimitedError`` we also attach a
+    ``Retry-After`` header so well-behaved clients back off properly
+    (RFC 9110 §10.2.3).
     """
     trace_id = getattr(request.state, "trace_id", None)
     envelope = exc.to_envelope(trace_id=trace_id)
@@ -159,7 +161,15 @@ def _idp_error_handler(request: Request, exc: IDPError) -> JSONResponse:
         trace_id,
     )
     metrics.inc("idp_error_total", code=exc.code)
-    return JSONResponse(status_code=exc.status, content=envelope)
+
+    headers: dict[str, str] = {}
+    if isinstance(exc, RateLimitedError) and "details" in envelope["error"]:
+        retry_after = envelope["error"]["details"].get("retry_after_seconds")
+        if retry_after is not None and int(retry_after) > 0:
+            headers["Retry-After"] = str(int(retry_after))
+    return JSONResponse(
+        status_code=exc.status, content=envelope, headers=headers
+    )
 
 
 def _unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:

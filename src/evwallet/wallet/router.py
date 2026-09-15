@@ -19,6 +19,7 @@ from evwallet.config import get_settings
 from evwallet.db.models import User, Wallet, WalletTransaction
 from evwallet.db.session import get_db
 from evwallet.errors import (
+    AuthError,
     BackendUnavailableError,
     ValidationError,
     WalletNotFoundError,
@@ -161,8 +162,21 @@ async def topup(
 
     For Stripe: ``source_payload`` should contain ``payment_intent_id``.
     For Apple/Google Pay: ``source_payload`` is the native token payload.
+
+    Gate: the user's email must be verified (POST /auth/verify-email).
+    Unverified users get 403 FORBIDDEN — prevents the most basic
+    abuse pattern (sign up + top up + drain) without an SMTP
+    confirmation step. The cost: one email per disposable inbox.
     """
     wallet = await _load_wallet_for_user(db, user)
+    if user.email_verified_at is None:
+        raise AuthError(
+            message="verify your email before topping up",
+            details={
+                "code": "EMAIL_NOT_VERIFIED",
+                "hint": "POST /api/v1/auth/verify-email with the 6-digit code from your inbox",
+            },
+        )
 
     if body.source == "stripe":
         payment_intent_id = body.source_payload.get("payment_intent_id")

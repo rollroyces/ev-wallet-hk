@@ -36,13 +36,52 @@ from evwallet.config import get_settings
 from evwallet.db.models import SocialAccount, User, Wallet
 from evwallet.db.session import get_db
 from evwallet.errors import (
+    AuthError,
     ConflictError,
     SchemaValidationError,
 )
+from evwallet.security.ratelimit import RateLimitConfig, rate_limit
 
 _log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
+
+
+# ---------------------------------------------------------------------------
+# Rate limiting (Redis-backed, see evwallet.security.ratelimit)
+# ---------------------------------------------------------------------------
+# Built lazily because get_settings() is cached; we want the config
+# read once at import time and the resulting dep instance reused for
+# the life of the process. To pick up runtime-config changes, restart
+# the worker.
+_login_dep = rate_limit(
+    RateLimitConfig(
+        limit=get_settings().rate_limit_login,
+        window_seconds=get_settings().rate_limit_login_window_s,
+        scope="auth.login",
+    )
+)
+_register_dep = rate_limit(
+    RateLimitConfig(
+        limit=get_settings().rate_limit_register,
+        window_seconds=get_settings().rate_limit_register_window_s,
+        scope="auth.register",
+    )
+)
+_verify_dep = rate_limit(
+    RateLimitConfig(
+        limit=get_settings().rate_limit_verify,
+        window_seconds=get_settings().rate_limit_verify_window_s,
+        scope="auth.verify",
+    )
+)
+_resend_dep = rate_limit(
+    RateLimitConfig(
+        limit=get_settings().rate_limit_resend,
+        window_seconds=get_settings().rate_limit_resend_window_s,
+        scope="auth.resend",
+    )
+)
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +132,9 @@ class UserResponse(BaseModel):
     locale: str
     is_admin: bool
     created_at: datetime
+    # Set after a successful POST /auth/verify-email. The topup flow
+    # is gated on this being non-null.
+    email_verified_at: datetime | None = None
 
 
 class WalletSummaryResponse(BaseModel):
@@ -135,6 +177,7 @@ def _user_to_response(user: User) -> UserResponse:
         locale=user.locale,
         is_admin=user.is_admin,
         created_at=user.created_at,
+        email_verified_at=user.email_verified_at,
     )
 
 
@@ -297,6 +340,7 @@ def _make_session(user: User) -> SessionResponse:
     response_model=SessionResponse,
     status_code=status.HTTP_200_OK,
     summary="Email + password login (real password verify; dev-mode shortcut when EVW_DEV_LOGIN=true)",
+    dependencies=[Depends(_login_dep)],
 )
 async def login(
     body: LoginRequest,
@@ -363,6 +407,7 @@ async def login(
     response_model=SessionResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Email + password signup (creates user + wallet + session)",
+    dependencies=[Depends(_register_dep)],
 )
 async def register(
     body: RegisterRequest,
@@ -407,6 +452,17 @@ async def register(
     # ``expire_on_commit=False`` at sessionmaker level (done in
     # ``db/session.py``) makes this safe.
     await db.refresh(user)
+
+    # Issue a verification code right away. The user is auto-logged-in
+    # but they can't top up until they verify their email (gated in
+    # the wallet router). Send failures are logged, not raised — the
+    # user can re-request via /auth/resend-verification.
+    from evwallet.email.verification import issue_code
+
+    try:
+        await issue_code(user, db, purpose="signup")
+    except Exception as exc:  # pragma: no cover
+        _log.warning("verification email send failed user_id=%s error=%s", user.id, exc)
 
     return _make_session(user)
 
@@ -489,6 +545,114 @@ async def me(
     """Return the authenticated user + a wallet summary."""
     wallet = await _load_wallet(db, user.id)
     return MeResponse(user=_user_to_response(user), wallet=_wallet_to_summary(wallet))
+
+
+# ---------------------------------------------------------------------------
+# Email verification
+# ---------------------------------------------------------------------------
+
+
+class VerifyEmailRequest(BaseModel):
+    """Email verification code submission."""
+
+    code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+
+
+class VerifyEmailResponse(BaseModel):
+    """Response from /auth/verify-email. ``dev_code`` is set only when
+    the verification row was issued via the dev / console sender — so
+    a developer or test can see the code. In production with a real
+    SMTP relay, this is always null."""
+
+    verified: bool
+    email_verified_at: datetime
+    dev_code: str | None = None
+
+
+class ResendVerificationResponse(BaseModel):
+    """Response from POST /auth/resend-verification."""
+
+    sent: bool
+    expires_at: datetime
+    # dev-only — see above
+    dev_code: str | None = None
+
+
+@router.post(
+    "/verify-email",
+    response_model=VerifyEmailResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Redeem a 6-digit email verification code",
+    dependencies=[Depends(_verify_dep)],
+)
+async def verify_email(
+    body: VerifyEmailRequest,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> VerifyEmailResponse:
+    """Verify the user's email by redeeming a 6-digit code.
+
+    The code was sent via /auth/register (auto) or via a fresh
+    /auth/resend-verification. The verifier is rate-limited per IP AND
+    locks the row after 5 wrong attempts (bcrypt-style).
+
+    The response includes ``dev_code`` only when the row was issued via
+    the dev / console sender (no SMTP configured) — useful for
+    running the whole flow end-to-end in local dev / tests.
+    """
+    from evwallet.email.verification import (
+        get_last_dev_code,
+        redeem_code,
+    )
+
+    ok = await redeem_code(user, body.code, db)
+    if not ok:
+        raise AuthError(
+            message="invalid or expired code",
+            details={"code": "VERIFY_CODE_INVALID"},
+        )
+    # Re-read the user to get the freshly-set timestamp
+    await db.refresh(user)
+    dev_code = get_last_dev_code(str(user.id))
+    return VerifyEmailResponse(
+        verified=True,
+        email_verified_at=user.email_verified_at or datetime.now(UTC),
+        dev_code=dev_code,
+    )
+
+
+@router.post(
+    "/resend-verification",
+    response_model=ResendVerificationResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Issue a fresh verification code (rate-limited 3/hour)",
+    dependencies=[Depends(_resend_dep)],
+)
+async def resend_verification(
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ResendVerificationResponse:
+    """Send a new verification code to the user's email.
+
+    Idempotent: if the user is already verified, returns 200 with
+    ``sent=False`` and the existing verified timestamp. Otherwise
+    issues a fresh code (invalidating any prior unconsumed rows by
+    making them the older one — the verifier picks the latest).
+    """
+    from evwallet.email.verification import issue_code
+
+    if user.email_verified_at is not None:
+        return ResendVerificationResponse(
+            sent=False,
+            expires_at=user.email_verified_at,
+            dev_code=None,
+        )
+    issued = await issue_code(user, db, purpose="resend")
+    return ResendVerificationResponse(
+        sent=True,
+        expires_at=issued.expires_at,
+        dev_code=issued.dev_code,
+    )
 
 
 __all__ = ["router"]

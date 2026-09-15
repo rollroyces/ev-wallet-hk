@@ -114,6 +114,14 @@ class User(Base):
     # (Apple, Google) never set a local password. Production-only field;
     # the dev-mode login shortcut ignores it.
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Set the first time the user successfully verifies their email
+    # via POST /auth/verify-email. NULL = unverified. The topup flow
+    # is gated on this being non-NULL — a basic anti-abuse / anti-sybil
+    # measure that costs the attacker one SMTP delivery per disposable
+    # inbox.
+    email_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
@@ -717,6 +725,61 @@ class StripeWebhookEvent(Base):
 
 
 # ---------------------------------------------------------------------------
+# EmailVerification: one row per "send me a code" request.
+#
+# Stores an Argon2 hash of the 6-digit code (NOT the code itself) and
+# a TTL. The user submits the code via POST /auth/verify-email; we
+# hash the submitted code, look up the latest non-expired row for
+# that user, and verify the hash.
+# ---------------------------------------------------------------------------
+
+
+class EmailVerification(Base):
+    __tablename__ = "email_verifications"
+    __table_args__ = (
+        Index("ix_email_verifications_user_active", "user_id", "consumed_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=func.gen_random_uuid(),
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # Argon2id hash of the 6-digit code. The plaintext is sent once
+    # via the email channel and never stored.
+    code_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Recipient + purpose, captured at issuance time for the email body
+    # and audit log. The recipient here is always the user's primary
+    # email at issuance; if the user later changes their email, old
+    # rows are still tied to that address (they're short-lived anyway).
+    email_to: Mapped[str] = mapped_column(String(254), nullable=False)
+    purpose: Mapped[str] = mapped_column(String(32), nullable=False, default="signup")
+    # Hard expiry — typically 15 minutes after issuance
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    # Set when the user successfully redeems the code
+    consumed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # How many wrong attempts have been made on this row — used to
+    # lock out after N wrong codes (bcrypt-style rate-limiting on the
+    # verifier endpoint).
+    attempts: Mapped[int] = mapped_column(nullable=False, default=0)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+
+
+# ---------------------------------------------------------------------------
 # All model names — exposed for typing helpers and Alembic autogenerate.
 # ---------------------------------------------------------------------------
 
@@ -724,6 +787,7 @@ class StripeWebhookEvent(Base):
 __all__ = [
     "ChargingSession",
     "ChargingStation",
+    "EmailVerification",
     "HourlyRate",
     "LedgerEntry",
     "Pole",

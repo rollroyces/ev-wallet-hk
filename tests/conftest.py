@@ -31,6 +31,10 @@ os.environ.setdefault("EVW_ENV", "test")
 os.environ.setdefault("EVW_PREAUTH_MAX_HKD", "500.00")
 os.environ.setdefault("EVW_APPLE_BUNDLE_ID", "com.evwallet.hk")
 os.environ.setdefault("EVW_GOOGLE_CLIENT_ID", "test-google-client-id")
+# Rate limit is disabled in tests by default; specific tests set
+# tighter limits to exercise the limiter.
+os.environ.setdefault("EVW_RATE_LIMIT_LOGIN", "0")
+os.environ.setdefault("EVW_RATE_LIMIT_REGISTER", "0")
 
 # ----- stdlib + third-party ---------------------------------------------
 import asyncio
@@ -138,13 +142,19 @@ async def db_session(test_db_url):
 
 @pytest_asyncio.fixture
 async def clean_users(test_db_url):
-    """Delete all users before the test runs.
+    """Delete all users + email_verifications + flush the rate-limit
+    Redis buckets before the test runs.
 
-    The signup/login tests use `create_app()` which reads its DB URL from
-    Settings (not the per-test SQLite URL the test_db_url fixture swaps
-    in). That means they hit the live Postgres test DB at localhost:5433
-    when run in CI, and any leftover rows from earlier manual tests can
-    pollute results. Wipe the users table first.
+    The signup/login tests use `create_app()` which reads its DB URL
+    from Settings (not the per-test SQLite URL the test_db_url fixture
+    swaps in). That means they hit the live Postgres test DB at
+    localhost:5433 when run in CI, and any leftover rows from earlier
+    manual tests can pollute results. Wipe the users + email_verifications
+    tables first.
+
+    We also flush the rate-limit Redis buckets so the verify/resend
+    rate limits (10/15min, 3/hour) don't bleed between tests when
+    many tests run from the same IP (127.0.0.1 in CI).
 
     Tradeoff: tests using this fixture are NOT parallelisable against
     the same Postgres. That's fine for now (we serialise auth tests
@@ -155,9 +165,33 @@ async def clean_users(test_db_url):
     try:
         async with engine.begin() as conn:
             # CASCADE removes wallets, sessions, ledger entries, etc.
+            # email_verifications has its own FK to users; CASCADE removes
+            # those too. Wiping in this order keeps things tidy.
+            await conn.execute(text("DELETE FROM email_verifications"))
             await conn.execute(text("DELETE FROM users"))
     finally:
         await engine.dispose()
+
+    # Flush rate-limit Redis keys (best effort — Redis may be down)
+    try:
+        import redis.asyncio as aioredis
+
+        from evwallet.config import get_settings
+        settings = get_settings()
+        client = aioredis.Redis(
+            host=settings.redis_host,
+            port=settings.redis_port,
+            password=settings.redis_password,
+            decode_responses=False,
+        )
+        # SCAN+DEL to avoid blocking
+        async for key in client.scan_iter(match="ratelimit:*", count=100):
+            await client.delete(key)
+        await client.aclose()
+    except Exception:
+        # Redis unavailable — rate limit will fall back to in-process
+        pass
+
     yield
 
 

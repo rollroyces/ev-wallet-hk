@@ -1,11 +1,13 @@
-import type { Metadata } from 'next';
 import './globals.css';
 import { Providers } from './providers';
 import { APP_NAME } from '@/lib/config';
 
-export const metadata: Metadata = {
+// Static export: per-page metadata is set via <title> in each page component
+// (or the default head from this layout). Server-rendered metadata() is
+// unavailable without a server runtime.
+export const metadata = {
   title: APP_NAME,
-  description: 'EV charging wallet for Hong Kong — admin + desktop portal',
+  description: 'EV charging wallet for Hong Kong — public web portal',
 };
 
 export default function RootLayout({

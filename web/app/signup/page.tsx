@@ -1,14 +1,10 @@
+import { Suspense } from 'react';
 import Link from 'next/link';
 import { Nav } from '@/components/nav';
 import { SignupForm } from './signup-form';
 
-export const dynamic = 'force-dynamic';
-
-export default function SignupPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ next?: string; error?: string }>;
-}) {
+// Suspense wraps the client form so static export accepts its useSearchParams().
+export default function SignupPage() {
   return (
     <>
       <Nav />
@@ -18,7 +14,9 @@ export default function SignupPage({
           <p className="muted" style={{ marginBottom: '1.25rem' }}>
             EV Wallet HK — admin &amp; desktop portal
           </p>
-          <SignupForm searchParams={searchParams} />
+          <Suspense fallback={<div style={{ color: 'var(--muted)' }}>Loading…</div>}>
+            <SignupForm />
+          </Suspense>
           <p className="muted" style={{ fontSize: '0.85rem', marginTop: '1rem' }}>
             Already have an account?{' '}
             <Link href="/login" style={{ color: 'var(--accent)' }}>

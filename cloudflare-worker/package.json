@@ -1,0 +1,13 @@
+{
+  "name": "evw-api-web-proxy",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CORS proxy in front of the FastAPI backend for the public web portal.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^3.80.0"
+  }
+}

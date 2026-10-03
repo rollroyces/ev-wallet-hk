@@ -1,13 +1,24 @@
-import { redirect } from 'next/navigation';
+'use client';
+
+import { useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth';
 
-// Landing page: if logged in, go to dashboard; else go to signup.
-// New visitors land on signup first — the more common path for a
-// first-time visitor. Returning users can click "Sign in" from there.
-export default async function HomePage() {
-  const user = await getCurrentUser();
-  if (user) {
-    redirect('/dashboard');
-  }
-  redirect('/signup');
+// Landing page: route based on whether a session token is in localStorage.
+// SSR has no localStorage so this must run client-side. Renders nothing
+// while we decide; useRouter.push is synchronous-ish so the flash is short.
+export default function HomePage() {
+  const router = useRouter();
+
+  useEffect(() => {
+    const user = getCurrentUser();
+    if (user) router.replace('/dashboard');
+    else router.replace('/login');
+  }, [router]);
+
+  return (
+    <main style={{ padding: '4rem 1rem', textAlign: 'center', color: 'var(--muted)' }}>
+      Loading…
+    </main>
+  );
 }

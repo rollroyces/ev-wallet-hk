@@ -1,26 +1,17 @@
 /**
- * EV Wallet HK web API client.
+ * EV Wallet HK web API client (static-export build).
  *
- * Implements the ApiClient interface, mirroring mobile/lib/api.ts structure
- * so mobile + web stay drop-in siblings. Type names match the shared
- * mobile/lib/types.ts (which is byte-identical to web/lib/types.ts).
- *
- * Differences from mobile/lib/api.ts:
- *   - No refresh-token flow (HTTP-only cookie; server handles refresh).
- *   - No Bearer header (browser / server-side cookie forwarding instead).
- *   - No push-token registration (web doesn't use push).
- *
- * Two execution modes:
- *   - Server:  getApiClient(cookieHeader) — forwards the incoming Cookie
- *     header to the backend so the same JWT is presented.
- *   - Browser: getApiClient() — the browser sends the HTTP-only cookie on
- *     same-origin requests automatically.
- *
- * Base URL: API_BASE_URL from lib/config (defaults to NEXT_PUBLIC_API_BASE_URL).
+ * Browser-only. The previous implementation used server components +
+ * cookie forwarding + server actions, none of which work with
+ * `next export` / GitHub Pages. This version:
+ *   - Reads the JWT from localStorage and sends it as Authorization: Bearer.
+ *   - Calls the public API base (NEXT_PUBLIC_API_BASE_URL) directly from
+ *     the browser. In production this URL points at the Cloudflare Worker
+ *     that proxies + CORS-rewrites requests to the FastAPI backend.
+ *   - The backend still does the real auth check; this client just
+ *     forwards the token.
  */
 
-import { headers } from 'next/headers';
-import { API_BASE_URL, API_PREFIX } from './config';
 import {
   ApiError,
   type ApiErrorBody,
@@ -40,9 +31,12 @@ import {
   type Wallet,
   type WalletSummary,
 } from './types';
+import { API_BASE_URL, API_PREFIX } from './config';
+import { getToken } from './auth';
 
 export interface ApiClient {
   login(email: string, password: string): Promise<Session>;
+  register(email: string, password: string): Promise<Session>;
   loginApple(identityToken: string): Promise<Session>;
   loginGoogle(idToken: string): Promise<Session>;
   me(): Promise<{ user: User; wallet: WalletSummary }>;
@@ -113,27 +107,22 @@ async function parseErrorBody(res: Response): Promise<ApiErrorBody | null> {
 async function request<T>(
   path: string,
   opts: RequestOptions,
-  cookieHeader: string | undefined,
 ): Promise<T> {
   const url = `${API_BASE_URL}${buildPath(path, opts.query)}`;
-  const headersInit: Record<string, string> = { Accept: 'application/json' };
+  const headersInit: Record<string, string> = {
+    Accept: 'application/json',
+  };
   if (opts.body !== undefined) headersInit['Content-Type'] = 'application/json';
-  if (cookieHeader) headersInit['Cookie'] = cookieHeader;
 
-  // The backend's auth middleware expects ``Authorization: Bearer <token>``,
-  // not a Cookie header. Extract the JWT from the forwarded ``evw_auth``
-  // cookie so server-rendered pages can call authenticated endpoints.
-  if (cookieHeader) {
-    const match = /(?:^|;\s*)evw_auth=([^;]+)/.exec(cookieHeader);
-    if (match && match[1]) {
-      headersInit['Authorization'] = `Bearer ${decodeURIComponent(match[1])}`;
-    }
-  }
+  const token = getToken();
+  if (token) headersInit['Authorization'] = `Bearer ${token}`;
 
   const init: RequestInit = {
     method: opts.method ?? 'GET',
     headers: headersInit,
     cache: 'no-store',
+    credentials: 'omit',
+    mode: 'cors',
   };
   if (opts.body !== undefined) init.body = JSON.stringify(opts.body);
 
@@ -164,27 +153,11 @@ async function request<T>(
 }
 
 /**
- * Server-side convenience: extract the incoming Cookie header so we can
- * forward it to the backend. Returns undefined when called from a context
- * without request headers (e.g., during static analysis at build time).
+ * Browser-side ApiClient. Reads the JWT from localStorage on every call.
  */
-export async function getCookieHeader(): Promise<string | undefined> {
-  try {
-    const h = await headers();
-    return h.get('cookie') ?? undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Build an ApiClient bound to a particular execution context.
- *   - Pass `cookieHeader` from server components / route handlers / server actions.
- *   - Omit it for client components (the browser sends the cookie).
- */
-export function getApiClient(cookieHeader?: string): ApiClient {
+export function getApiClient(): ApiClient {
   const call = <T>(path: string, opts: RequestOptions = {}) =>
-    request<T>(path, opts, cookieHeader);
+    request<T>(path, opts);
 
   return {
     // ---------- Auth ----------
@@ -193,6 +166,25 @@ export function getApiClient(cookieHeader?: string): ApiClient {
         method: 'POST',
         body: { email, password },
       });
+    },
+    async register(email, password) {
+      // Backend may return either a Session directly (sets up cookies + token)
+      // or just 201. If 201, the caller follows up with login().
+      try {
+        return await call<Session>('/auth/register', {
+          method: 'POST',
+          body: { email, password },
+        });
+      } catch (e) {
+        // Some backends return 204 No Content on register. Fall back to login.
+        if (e instanceof ApiError && e.status === 204) {
+          return call<Session>('/auth/login', {
+            method: 'POST',
+            body: { email, password },
+          });
+        }
+        throw e;
+      }
     },
     async loginApple(identityToken) {
       return call<Session>('/auth/apple', {

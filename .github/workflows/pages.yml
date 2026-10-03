@@ -1,0 +1,69 @@
+name: Deploy web to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Prevent multiple deploys racing; cancel in-progress on a new push.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci --legacy-peer-deps
+
+      - name: Build static export
+        working-directory: web
+        env:
+          # The public URL the browser uses to reach the FastAPI backend.
+          # Replace with the Cloudflare Worker URL once it's deployed.
+          # Trailing slash matters: lib/config.ts uses URL concatenation.
+          NEXT_PUBLIC_API_BASE_URL: ${{ vars.NEXT_PUBLIC_API_BASE_URL || 'https://evw-api-web.placeholder.workers.dev' }}
+        run: npm run build
+
+      - name: Strip /admin from public output
+        # /admin is intentionally not on the public site. The route is gone
+        # because we deleted app/admin from source — this is a belt-and-braces
+        # safety net if anyone re-adds it later.
+        run: |
+          if [ -d out/admin ]; then
+            echo "Removing out/admin/ from public build"
+            rm -rf out/admin
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

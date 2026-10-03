@@ -1,33 +1,49 @@
 'use client';
 
-import { useEffect, useState, useTransition } from 'react';
+import { useState, useTransition } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { registerAction } from '../login/actions';
+import { setToken } from '@/lib/auth';
+import { getApiClient, ApiError } from '@/lib/api';
 
-export function SignupForm({
-  searchParams,
-}: {
-  searchParams: Promise<{ next?: string; error?: string }>;
-}) {
-  const params = useSearchParams();
+export function SignupForm() {
   const router = useRouter();
-  const [next, setNext] = useState<string>('/dashboard');
+  const params = useSearchParams();
+  const next = params.get('next') || '/dashboard';
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
-  useEffect(() => {
-    searchParams.then((p) => setNext(p.next || '/dashboard'));
-  }, [searchParams]);
-
-  function handleSubmit(formData: FormData) {
+  async function handleSubmit(formData: FormData) {
     setError(null);
+    const email = String(formData.get('email') ?? '');
+    const password = String(formData.get('password') ?? '');
+    const confirm = String(formData.get('confirm') ?? '');
+
+    if (password !== confirm) {
+      setError("Passwords don't match.");
+      return;
+    }
+    if (password.length < 8) {
+      setError('Password must be at least 8 characters.');
+      return;
+    }
+
     startTransition(async () => {
-      const result = await registerAction(formData);
-      if (result.ok) {
-        router.push(next || '/dashboard');
+      try {
+        const api = getApiClient();
+        const session = await api.register(email, password);
+        setToken(session.access_token);
+        router.push(next);
         router.refresh();
-      } else {
-        setError(result.message);
+      } catch (e) {
+        if (e instanceof ApiError) {
+          if (e.status === 401 || e.status === 409) {
+            setError('An account with that email already exists. Try signing in.');
+          } else {
+            setError(e.message);
+          }
+        } else {
+          setError('Sign up failed.');
+        }
       }
     });
   }
@@ -43,48 +59,52 @@ export function SignupForm({
           {error}
         </div>
       ) : null}
+
       <label style={{ display: 'block', marginBottom: '0.75rem' }}>
         <span style={{ display: 'block', fontSize: '0.85rem', marginBottom: 4 }}>Email</span>
         <input
+          name="email"
           type="email"
           required
           autoComplete="email"
           className="input"
-          name="email"
+          disabled={isPending}
         />
       </label>
+
       <label style={{ display: 'block', marginBottom: '0.75rem' }}>
         <span style={{ display: 'block', fontSize: '0.85rem', marginBottom: 4 }}>
           Password
         </span>
         <input
+          name="password"
           type="password"
           required
           autoComplete="new-password"
           minLength={8}
           className="input"
-          name="password"
+          disabled={isPending}
         />
-        <span
-          className="muted"
-          style={{ display: 'block', fontSize: '0.7rem', marginTop: 4 }}
-        >
+        <span className="muted" style={{ display: 'block', fontSize: '0.7rem', marginTop: 4 }}>
           At least 8 characters.
         </span>
       </label>
+
       <label style={{ display: 'block', marginBottom: '1rem' }}>
         <span style={{ display: 'block', fontSize: '0.85rem', marginBottom: 4 }}>
           Confirm password
         </span>
         <input
+          name="confirm"
           type="password"
           required
           autoComplete="new-password"
           minLength={8}
           className="input"
-          name="confirm"
+          disabled={isPending}
         />
       </label>
+
       <button
         className="btn btn-primary"
         type="submit"

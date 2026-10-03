@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useTransition } from 'react';
-import { logoutAction } from '@/app/login/actions';
+import { clearToken } from '@/lib/auth';
 
 const baseLinks: { href: string; label: string }[] = [
   { href: '/dashboard', label: 'Dashboard' },
@@ -11,32 +11,32 @@ const baseLinks: { href: string; label: string }[] = [
   { href: '/sessions', label: 'Sessions' },
 ];
 
-const adminLinks: { href: string; label: string }[] = [
-  { href: '/admin/stations', label: 'Admin: Stations' },
-  { href: '/admin/ledger', label: 'Admin: Ledger' },
-];
+// NOTE: Admin routes are intentionally NOT linked from the public build.
+// The /admin source remains in the repo for local development; the
+// GitHub Actions workflow strips /admin from out/ before deploying to
+// GitHub Pages.
 
 export function Nav({
   user,
 }: {
   /** Undefined on public pages (login/signup). The Nav hides the
    * profile chip and admin links when undefined. */
-  user?: { display_name: string; is_admin: boolean };
+  user?: { display_name?: string; is_admin: boolean };
 }) {
   const pathname = usePathname();
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
 
   function onLogout() {
-    startTransition(async () => {
-      await logoutAction();
+    startTransition(() => {
+      clearToken();
       router.push('/login');
       router.refresh();
     });
   }
 
   const isAdmin = user?.is_admin ?? false;
-  const displayName = user?.display_name ?? "";
+  const displayName = user?.display_name ?? '';
 
   // When not logged in (login/signup pages), only show the brand mark
   // and a "Sign in" / "Sign up" link — no profile chip, no log-out button.
@@ -63,7 +63,10 @@ export function Nav({
     );
   }
 
-  const links = isAdmin ? [...baseLinks, ...adminLinks] : baseLinks;
+  // Hide admin links on the static build regardless of claim — the
+  // routes don't exist after the post-build strip.
+  const links = baseLinks;
+  void isAdmin; // kept for type-compatibility with server build
 
   return (
     <nav
@@ -98,9 +101,9 @@ export function Nav({
           );
         })}
       </div>
-      <span className="muted" style={{ fontSize: '0.85rem' }}>
-        {displayName}
-      </span>
+      {displayName ? (
+        <span className="muted" style={{ fontSize: '0.85rem' }}>{displayName}</span>
+      ) : null}
       <button className="btn" type="button" onClick={onLogout} disabled={isPending}>
         {isPending ? '…' : 'Sign out'}
       </button>

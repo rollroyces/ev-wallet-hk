@@ -1,10 +1,12 @@
-// Backend API base URL. The web portal talks directly to the FastAPI service.
-// NEXT_PUBLIC_* is exposed to the browser, which is fine because the API is
-// unauthenticated endpoints are public — authenticated routes rely on the
-// HTTP-only auth cookie set by /api/v1/auth/login.
+// Runtime config for the static-exported web portal.
 //
-// In production the backend is reverse-proxied through Caddy; the web origin
-// reads NEXT_PUBLIC_API_BASE_URL at build time.
+// NEXT_PUBLIC_* values are inlined at build time. Since we deploy via
+// `next build && next export`, you MUST rebuild after changing these.
+//
+// In production the public API is proxied through a Cloudflare Worker
+// (see cloudflare-worker/) that adds CORS and forwards to the FastAPI
+// backend behind the existing Cloudflare Tunnel. The browser talks to
+// the Worker URL only — it never sees the backend directly.
 
 export const API_BASE_URL: string =
   (typeof process !== 'undefined' && process.env.NEXT_PUBLIC_API_BASE_URL) ||
@@ -16,6 +18,5 @@ export const APP_NAME: string =
 
 export const API_PREFIX = '/api/v1';
 
-// Name of the HTTP-only cookie the backend sets on successful login.
-// Mobile and web MUST agree on this name.
-export const AUTH_COOKIE_NAME = 'evw_auth';
+// Storage key for the JWT in localStorage. Single source of truth.
+export const AUTH_TOKEN_KEY = 'evw_auth_token';

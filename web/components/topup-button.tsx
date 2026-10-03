@@ -21,8 +21,17 @@
 import { loadStripe, type Stripe } from '@stripe/stripe-js';
 import { Elements, PaymentElement, useElements, useStripe } from '@stripe/react-stripe-js';
 import { useEffect, useMemo, useState } from 'react';
+import { API_BASE_URL } from '@/lib/config';
+import { getToken } from '@/lib/auth';
 
 const PRESET_AMOUNTS = [100, 200, 500, 1000];
+
+function authedHeaders(): Record<string, string> {
+  const h: Record<string, string> = { 'Content-Type': 'application/json' };
+  const t = getToken();
+  if (t) h.Authorization = `Bearer ${t}`;
+  return h;
+}
 
 // Strip query string + hash from window.location for the return_url so the
 // user lands back on the same page after a 3DS challenge.
@@ -42,7 +51,9 @@ export function TopupButton(): React.JSX.Element {
     let cancelled = false;
     void (async () => {
       try {
-        const r = await fetch('/api/v1/config/stripe');
+        const r = await fetch(`${API_BASE_URL}/api/v1/config/stripe`, {
+          headers: authedHeaders(),
+        });
         const data = (await r.json()) as { publishable_key: string | null };
         if (!cancelled) setPk(data.publishable_key);
       } catch (e) {
@@ -260,10 +271,11 @@ function TopupForm({ amount, onError, onSuccess, returnUrl }: TopupFormProps): R
 
     try {
       // 1. Create the PaymentIntent on the server
-      const r = await fetch('/api/v1/wallet/topup/stripe/intent', {
+      const r = await fetch(`${API_BASE_URL}/api/v1/wallet/topup/stripe/intent`, {
         method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
+        credentials: 'omit',
+        mode: 'cors',
+        headers: authedHeaders(),
         body: JSON.stringify({ amount_hkd: String(amount) }),
       });
       if (!r.ok) {

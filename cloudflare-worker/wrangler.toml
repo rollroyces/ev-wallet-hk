@@ -1,0 +1,19 @@
+name = "evw-api-web"
+main = "src/index.js"
+compatibility_date = "2025-10-01"
+
+# Free-tier Workers plan (100k requests/day). Sufficient for a public portal.
+
+# Where the Worker forwards to. Replace with your Cloudflare Tunnel hostname
+# once it's set up (e.g. "https://api.evwallet.com.hk"). Do NOT point this
+# directly at FastAPI on 127.0.0.1 — the Worker runs on Cloudflare's edge,
+# not on the Mac mini.
+#
+# Set with:  wrangler secret put BACKEND_ORIGIN
+# Or hardcode below for dev-only.
+#
+# [vars]
+# BACKEND_ORIGIN = "https://api.evwallet.com.hk"
+
+[observability]
+enabled = true

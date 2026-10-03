@@ -1,31 +1,74 @@
+'use client';
+
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { redirect } from 'next/navigation';
-import { getApiClient, getCookieHeader, ApiError } from '@/lib/api';
+import { useRouter } from 'next/navigation';
+import { getApiClient, ApiError } from '@/lib/api';
+import { getCurrentUser } from '@/lib/auth';
 import { Nav } from '@/components/nav';
+import type { ChargingSession } from '@/lib/types';
 
-export const dynamic = 'force-dynamic';
+interface Data {
+  user: { is_admin: boolean };
+  sessions: ChargingSession[];
+}
 
-export default async function SessionsPage() {
-  const api = getApiClient(await getCookieHeader());
+export default function SessionsPage() {
+  const router = useRouter();
+  const [data, setData] = useState<Data | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  let user: { display_name: string; is_admin: boolean };
-  let sessions: Awaited<ReturnType<typeof api.getSessions>> = [];
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const u = getCurrentUser();
+      if (!u) {
+        router.replace('/login?next=/sessions');
+        return;
+      }
+      try {
+        const api = getApiClient();
+        const me = await api.me();
+        const sessions = await api.getSessions(50);
+        if (cancelled) return;
+        setData({ user: { is_admin: me.user.is_admin }, sessions });
+      } catch (e) {
+        if (cancelled) return;
+        if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
+          router.replace('/login?next=/sessions');
+          return;
+        }
+        setError(e instanceof Error ? e.message : 'Failed to load sessions.');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [router]);
 
-  try {
-    const me = await api.me();
-    user = me.user;
-    sessions = await api.getSessions(50);
-  } catch (e) {
-    if (e instanceof ApiError && (e.status === 401 || e.status === 403)) redirect('/login');
-    throw e;
+  if (error) {
+    return (
+      <>
+        <Nav user={data ? data.user : undefined} />
+        <main style={{ maxWidth: 1100, margin: '0 auto', padding: '1.5rem 1rem' }}>
+          <div className="tag-pill tag-danger" role="alert">{error}</div>
+        </main>
+      </>
+    );
+  }
+
+  if (!data) {
+    return (
+      <main style={{ padding: '4rem 1rem', textAlign: 'center', color: 'var(--muted)' }}>
+        Loading…
+      </main>
+    );
   }
 
   return (
     <>
-      <Nav user={{ display_name: user.display_name, is_admin: user.is_admin }} />
+      <Nav user={data.user} />
       <main style={{ maxWidth: 1100, margin: '0 auto', padding: '1.5rem 1rem' }}>
         <h1>Charging sessions</h1>
-        <p className="muted">{sessions.length} session{sessions.length === 1 ? '' : 's'}.</p>
+        <p className="muted">{data.sessions.length} session{data.sessions.length === 1 ? '' : 's'}.</p>
 
         <table className="card" style={{ width: '100%', borderCollapse: 'collapse', marginTop: '1rem' }}>
           <thead>
@@ -39,7 +82,7 @@ export default async function SessionsPage() {
             </tr>
           </thead>
           <tbody>
-            {sessions.map((s) => (
+            {data.sessions.map((s) => (
               <tr key={s.id} style={{ borderBottom: '1px solid var(--border)' }}>
                 <td style={{ padding: '0.5rem' }} className="muted">
                   {new Date(s.started_at).toLocaleString()}
@@ -63,11 +106,11 @@ export default async function SessionsPage() {
                   {s.settled_hkd ?? s.running_cost_hkd}
                 </td>
                 <td style={{ padding: '0.5rem' }}>
-                  <Link href={`/sessions/${s.id}`}>open</Link>
+                  <Link href={`/sessions/${encodeURIComponent(s.id)}`}>open</Link>
                 </td>
               </tr>
             ))}
-            {sessions.length === 0 ? (
+            {data.sessions.length === 0 ? (
               <tr><td colSpan={6} style={{ padding: '0.75rem' }} className="muted">No past sessions.</td></tr>
             ) : null}
           </tbody>
